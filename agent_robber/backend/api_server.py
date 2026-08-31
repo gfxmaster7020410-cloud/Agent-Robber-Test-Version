@@ -1,7 +1,8 @@
-"""Agent Robber — Backend API Server (Module 02).
+"""Agent Robber — Backend API Server (Module 03).
 
 Lightweight FastAPI server on http://127.0.0.1:8765.
-Provides REST endpoints for model CRUD, provider registry, and live health pings.
+Provides REST endpoints for model CRUD, provider registry,
+live health pings, and Brain Orchestrator task decomposition.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from pydantic import BaseModel, Field
 
 from agent_robber.db.database import Database
 from agent_robber.backend.adapters.registry import ping_provider
+from agent_robber.backend.orchestrator import BrainOrchestrator
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,11 +32,12 @@ log = logging.getLogger("agent-robber")
 # ---------------------------------------------------------------------------
 DB_PATH = Path(__file__).resolve().parent.parent.parent / ".robber" / "agent_robber.db"
 db = Database(DB_PATH)
+brain = BrainOrchestrator(db)
 
 # ---------------------------------------------------------------------------
 # FastAPI app
 # ---------------------------------------------------------------------------
-app = FastAPI(title="Agent Robber API", version="2.0.0")
+app = FastAPI(title="Agent Robber API", version="3.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -73,16 +76,14 @@ class ModelCreate(BaseModel):
 
 
 class PingRequest(BaseModel):
-    """Ping using explicit parameters (no saved model required)."""
     provider: str = Field(default="openai")
     base_url: str = Field(default="")
     api_key: str = Field(default="")
     model_string: str = Field(default="gpt-4o-mini")
 
 
-class PingModelRequest(BaseModel):
-    """Ping a model that is already saved in the database."""
-    model_id: str
+class OrchestrateRequest(BaseModel):
+    prompt: str = Field(..., min_length=1, description="High-level prompt to decompose")
 
 
 # ---------------------------------------------------------------------------
@@ -139,8 +140,6 @@ async def delete_model(model_id: str) -> dict[str, str]:
 
 @app.post("/api/v1/models/ping")
 async def ping_model(body: PingRequest) -> dict[str, Any]:
-    """Live health check using explicit provider params."""
-    # Resolve base URL: use provided, else fall back to provider default
     base_url = body.base_url.strip()
     if not base_url:
         base_url = await db.get_provider_default_url(body.provider)
@@ -164,7 +163,6 @@ async def ping_model(body: PingRequest) -> dict[str, Any]:
 
 @app.post("/api/v1/models/{model_id}/ping")
 async def ping_saved_model(model_id: str) -> dict[str, Any]:
-    """Live health check for a model already stored in the database."""
     row = await db.get_model_raw(model_id)
     if row is None:
         raise HTTPException(status_code=404, detail="Model not found")
@@ -181,11 +179,9 @@ async def ping_saved_model(model_id: str) -> dict[str, Any]:
         model_string=str(row.get("model_string", "")),
     )
 
-    # Update health status in DB
     health = "HEALTHY" if result.success else "OFFLINE"
     await db.update_model_health(model_id, health)
 
-    # Write to logs
     await db.write_log(
         target_alias=str(row.get("alias", "")),
         status_code=result.status_code,
@@ -203,11 +199,40 @@ async def ping_saved_model(model_id: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# Routes — Brain Orchestrator
+# ---------------------------------------------------------------------------
+
+@app.post("/api/v1/orchestrate")
+async def orchestrate(body: OrchestrateRequest) -> dict[str, Any]:
+    """Decompose a prompt into sub-tasks and persist to DB."""
+    result = await brain.decompose(body.prompt)
+    return {
+        "task_id": result.task_id,
+        "title": result.title,
+        "prompt": result.prompt,
+        "subtasks": [
+            {
+                "title": st.title,
+                "order_index": st.order_index,
+                "assigned_model_alias": st.assigned_model_alias,
+                "status": "QUEUED",
+            }
+            for st in result.subtasks
+        ],
+    }
+
+
+@app.get("/api/v1/tasks/latest")
+async def get_latest_task() -> dict[str, Any] | None:
+    """Return the most recent task with its subtask tree."""
+    return await db.get_latest_task_with_subtasks()
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 def run_server(host: str = "127.0.0.1", port: int = 8765) -> None:
-    """Blocking entry — called by run_robber.py."""
     uvicorn.run(app, host=host, port=port, log_level="info")
 
 

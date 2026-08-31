@@ -1,7 +1,8 @@
 """Async SQLite database layer for Agent Robber.
 
-Stores models (with encrypted API keys), providers, secrets, and request logs.
-Uses aiosqlite for async access and Fernet for envelope encryption.
+Stores models (with encrypted API keys), providers, tasks, subtasks,
+secrets, and request logs. Uses aiosqlite for async access and
+Fernet for envelope encryption.
 """
 
 from __future__ import annotations
@@ -43,6 +44,25 @@ CREATE TABLE IF NOT EXISTS providers (
     category            TEXT NOT NULL DEFAULT 'cloud',
     default_base_url    TEXT NOT NULL DEFAULT '',
     auth_type           TEXT NOT NULL DEFAULT 'bearer'
+);
+
+CREATE TABLE IF NOT EXISTS tasks (
+    id              TEXT PRIMARY KEY,
+    title           TEXT NOT NULL,
+    prompt          TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'PENDING',
+    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS subtasks (
+    id                  TEXT PRIMARY KEY,
+    task_id             TEXT NOT NULL,
+    title               TEXT NOT NULL,
+    assigned_model_alias TEXT NOT NULL DEFAULT '',
+    status              TEXT NOT NULL DEFAULT 'QUEUED',
+    result_summary      TEXT NOT NULL DEFAULT '',
+    order_index         INTEGER NOT NULL DEFAULT 0,
+    FOREIGN KEY(task_id) REFERENCES tasks(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS secrets (
@@ -192,7 +212,6 @@ class Database:
         await self._seed_providers()
 
     async def _seed_providers(self) -> None:
-        """Insert default provider presets if table is empty."""
         db = await self._require()
         async with db.execute("SELECT COUNT(*) FROM providers") as cur:
             count = (await cur.fetchone())[0]
@@ -308,7 +327,6 @@ class Database:
         return await self.fetchone("SELECT * FROM models WHERE id = ?", (model_id,))
 
     async def get_model_decrypted(self, model_id: str) -> dict[str, Any] | None:
-        """Return model dict with decrypted api_key (for internal proxy use only)."""
         row = await self.get_model_raw(model_id)
         if row is None:
             return None
@@ -331,13 +349,70 @@ class Database:
         return True
 
     def _safe_model_row(self, row: dict[str, Any]) -> dict[str, Any]:
-        """Return model dict with MASKED key for API responses."""
         d = dict(row)
         raw_key = self.vault.decrypt(d.pop("encrypted_api_key", ""))
         d["api_key"] = Vault.mask(raw_key)
         d["api_key_ready"] = bool(raw_key)
         d["is_active"] = bool(d.get("is_active", 0))
         return d
+
+    # -- tasks & subtasks ---------------------------------------------------
+
+    async def create_task(self, title: str, prompt: str) -> str:
+        task_id = str(uuid.uuid4())
+        await self.execute(
+            """INSERT INTO tasks (id, title, prompt, status, created_at)
+               VALUES (?, ?, ?, 'IN_PROGRESS', ?)""",
+            (task_id, title, prompt, datetime.now(timezone.utc).isoformat()),
+        )
+        return task_id
+
+    async def update_task_status(self, task_id: str, status: str) -> None:
+        await self.execute(
+            "UPDATE tasks SET status = ? WHERE id = ?", (status, task_id)
+        )
+
+    async def get_latest_task(self) -> dict[str, Any] | None:
+        return await self.fetchone(
+            "SELECT * FROM tasks ORDER BY created_at DESC LIMIT 1"
+        )
+
+    async def get_task(self, task_id: str) -> dict[str, Any] | None:
+        return await self.fetchone("SELECT * FROM tasks WHERE id = ?", (task_id,))
+
+    async def add_subtask(
+        self,
+        task_id: str,
+        title: str,
+        assigned_model_alias: str,
+        order_index: int,
+    ) -> str:
+        subtask_id = str(uuid.uuid4())
+        await self.execute(
+            """INSERT INTO subtasks (id, task_id, title, assigned_model_alias, status, result_summary, order_index)
+               VALUES (?, ?, ?, ?, 'QUEUED', '', ?)""",
+            (subtask_id, task_id, title, assigned_model_alias, order_index),
+        )
+        return subtask_id
+
+    async def update_subtask_status(self, subtask_id: str, status: str, result: str = "") -> None:
+        await self.execute(
+            "UPDATE subtasks SET status = ?, result_summary = ? WHERE id = ?",
+            (status, result, subtask_id),
+        )
+
+    async def get_subtasks(self, task_id: str) -> list[dict[str, Any]]:
+        return await self.fetchall(
+            "SELECT * FROM subtasks WHERE task_id = ? ORDER BY order_index ASC",
+            (task_id,),
+        )
+
+    async def get_latest_task_with_subtasks(self) -> dict[str, Any] | None:
+        task = await self.get_latest_task()
+        if task is None:
+            return None
+        task["subtasks"] = await self.get_subtasks(task["id"])
+        return task
 
     # -- secrets ------------------------------------------------------------
 
