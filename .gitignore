@@ -1,0 +1,17 @@
+node_modules/
+dist/
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+.env
+.env.local
+
+.robber/
+*.robberctx
+
+gui/src-tauri/target/
+gui/src-tauri/gen/
+

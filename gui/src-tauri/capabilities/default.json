@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "Minimal window capabilities. No filesystem, shell, or dialog access from the webview.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

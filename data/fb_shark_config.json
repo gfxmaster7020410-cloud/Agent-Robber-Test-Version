@@ -1,0 +1,51 @@
+{
+  "status": {
+    "instances": 0,
+    "motion_engine": "Calibration",
+    "micro_delay": "45ms - 180ms",
+    "health": "Stopped",
+    "is_running": false
+  },
+  "profiles": [
+    {
+      "id": "FB-001",
+      "target": "Social",
+      "state": "Launch",
+      "proxy": "192.168.1.5"
+    },
+    {
+      "id": "FB-002",
+      "target": "Web",
+      "state": "Idle",
+      "proxy": "192.168.1.6"
+    },
+    {
+      "id": "FB-003",
+      "target": "Social",
+      "state": "Logs",
+      "proxy": "192.168.1.7"
+    }
+  ],
+  "logs": [
+    {
+      "timestamp": "2026-08-29 19:57:03",
+      "message": "[PROFILE:FB-001] Action launch triggered",
+      "level": "INFO"
+    },
+    {
+      "timestamp": "2026-08-29 19:57:05",
+      "message": "[PROFILE:FB-001] Action launch triggered",
+      "level": "INFO"
+    },
+    {
+      "timestamp": "2026-08-29 20:04:39",
+      "message": "[ALERT] Emergency stop executed",
+      "level": "ERROR"
+    },
+    {
+      "timestamp": "2026-08-29 22:45:52",
+      "message": "[PROFILE:FB-003] Action logs triggered",
+      "level": "INFO"
+    }
+  ]
+}

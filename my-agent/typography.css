@@ -1,0 +1,144 @@
+/*
+ * Agent Robber CLI — bundled typography (Base Neue)
+ * Consumed by any HTML/web surface (docs preview, export views) and serves
+ * as the canonical font registration for the design system. The terminal
+ * itself renders glyphs; weights below mirror source/utils/typography.ts.
+ */
+
+@font-face {
+	font-family: 'Base Neue';
+	font-style: normal;
+	font-weight: 300;
+	font-display: swap;
+	src:
+		local('Base Neue Light'),
+		local('BaseNeue-Light'),
+		url('./assets/fonts/BaseNeue-Light.ttf') format('truetype');
+}
+
+@font-face {
+	font-family: 'Base Neue';
+	font-style: normal;
+	font-weight: 400;
+	font-display: swap;
+	src:
+		local('Base Neue'),
+		local('Base Neue Regular'),
+		local('BaseNeue-Regular'),
+		url('./assets/fonts/BaseNeue-Regular.ttf') format('truetype');
+}
+
+@font-face {
+	font-family: 'Base Neue';
+	font-style: normal;
+	font-weight: 500;
+	font-display: swap;
+	src:
+		local('Base Neue Medium'),
+		local('BaseNeue-Medium'),
+		url('./assets/fonts/BaseNeue-Medium.ttf') format('truetype');
+}
+
+@font-face {
+	font-family: 'Base Neue';
+	font-style: normal;
+	font-weight: 700;
+	font-display: swap;
+	src:
+		local('Base Neue Bold'),
+		local('Base Neue SemiBold'),
+		local('BaseNeue-SemiBold'),
+		url('./assets/fonts/BaseNeue-SemiBold.ttf') format('truetype');
+}
+
+/* Display / oblique accent face for splash art and ASCII banners */
+@font-face {
+	font-family: 'Base Neue';
+	font-style: oblique;
+	font-weight: 700;
+	font-stretch: condensed;
+	font-display: swap;
+	src:
+		local('Base Neue Super Condensed Bold Oblique'),
+		local('BaseNeue-SuperCondBoldObliq'),
+		url('./assets/fonts/BaseNeue-SuperCondBoldObliq.ttf') format('truetype');
+}
+
+/*
+ * Terminal cut — 'Base Neue Mono'
+ * Synthesized from the proportional masters by scripts/build_base_neue_mono.py:
+ * identical outlines, every glyph re-spaced onto one shared 1631/2000em cell so
+ * terminal emulators accept the family with zero layout compromise.
+ */
+@font-face {
+	font-family: 'Base Neue Mono';
+	font-style: normal;
+	font-weight: 300;
+	font-display: swap;
+	src:
+		local('Base Neue Mono Light'),
+		url('./assets/fonts/mono/BaseNeueMono-Light.ttf') format('truetype');
+}
+
+@font-face {
+	font-family: 'Base Neue Mono';
+	font-style: normal;
+	font-weight: 400;
+	font-display: swap;
+	src:
+		local('Base Neue Mono'),
+		local('Base Neue Mono Regular'),
+		url('./assets/fonts/mono/BaseNeueMono-Regular.ttf') format('truetype');
+}
+
+@font-face {
+	font-family: 'Base Neue Mono';
+	font-style: normal;
+	font-weight: 500;
+	font-display: swap;
+	src:
+		local('Base Neue Mono Medium'),
+		url('./assets/fonts/mono/BaseNeueMono-Medium.ttf') format('truetype');
+}
+
+@font-face {
+	font-family: 'Base Neue Mono';
+	font-style: normal;
+	font-weight: 700;
+	font-display: swap;
+	src:
+		local('Base Neue Mono Bold'),
+		local('Base Neue Mono SemiBold'),
+		url('./assets/fonts/mono/BaseNeueMono-SemiBold.ttf') format('truetype');
+}
+
+:root {
+	--cli-font-family: 'Base Neue', ui-monospace, 'Cascadia Mono', Consolas,
+		monospace;
+	--cli-font-family-terminal: 'Base Neue Mono', ui-monospace, 'Cascadia Mono',
+		Consolas, monospace;
+	--cli-tracking-micro: 0.02em;
+}
+
+/*
+ * Standard text renders naturally — no artificial gaps between letters.
+ * Headings/banners (700), section titles & tool headers (500), body, code
+ * blocks, inputs and command streams (400) are all letter-spacing: normal.
+ */
+.cli-heading,
+.cli-section-title,
+.cli-banner,
+.cli-body,
+.cli-code-block,
+.cli-terminal-input,
+.cli-stream,
+.cli-button,
+.cli-dropdown {
+	letter-spacing: normal;
+}
+
+/* Micro-text only: < 12px labels, uppercase section tags, micro timestamps */
+.cli-micro-text {
+	font-size: 11px;
+	letter-spacing: var(--cli-tracking-micro);
+}
