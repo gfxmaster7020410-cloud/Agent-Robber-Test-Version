@@ -1,7 +1,7 @@
-"""Agent Robber — Backend API Server (Module 01).
+"""Agent Robber — Backend API Server (Module 02).
 
 Lightweight FastAPI server on http://127.0.0.1:8765.
-Provides REST endpoints for model CRUD with encrypted vault storage.
+Provides REST endpoints for model CRUD, provider registry, and live health pings.
 """
 
 from __future__ import annotations
@@ -17,6 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from agent_robber.db.database import Database
+from agent_robber.backend.adapters.registry import ping_provider
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,7 +34,7 @@ db = Database(DB_PATH)
 # ---------------------------------------------------------------------------
 # FastAPI app
 # ---------------------------------------------------------------------------
-app = FastAPI(title="Agent Robber API", version="1.0.0")
+app = FastAPI(title="Agent Robber API", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
@@ -71,6 +72,19 @@ class ModelCreate(BaseModel):
     is_active: bool = True
 
 
+class PingRequest(BaseModel):
+    """Ping using explicit parameters (no saved model required)."""
+    provider: str = Field(default="openai")
+    base_url: str = Field(default="")
+    api_key: str = Field(default="")
+    model_string: str = Field(default="gpt-4o-mini")
+
+
+class PingModelRequest(BaseModel):
+    """Ping a model that is already saved in the database."""
+    model_id: str
+
+
 # ---------------------------------------------------------------------------
 # Routes — Health
 # ---------------------------------------------------------------------------
@@ -82,6 +96,15 @@ async def health() -> dict[str, Any]:
         "db_connected": db.connected,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+
+
+# ---------------------------------------------------------------------------
+# Routes — Providers
+# ---------------------------------------------------------------------------
+
+@app.get("/api/v1/providers")
+async def list_providers() -> list[dict[str, Any]]:
+    return await db.get_providers()
 
 
 # ---------------------------------------------------------------------------
@@ -108,6 +131,75 @@ async def delete_model(model_id: str) -> dict[str, str]:
     if not deleted:
         raise HTTPException(status_code=404, detail="Model not found")
     return {"ok": "deleted", "id": model_id}
+
+
+# ---------------------------------------------------------------------------
+# Routes — Ping / Health-check
+# ---------------------------------------------------------------------------
+
+@app.post("/api/v1/models/ping")
+async def ping_model(body: PingRequest) -> dict[str, Any]:
+    """Live health check using explicit provider params."""
+    # Resolve base URL: use provided, else fall back to provider default
+    base_url = body.base_url.strip()
+    if not base_url:
+        base_url = await db.get_provider_default_url(body.provider)
+
+    result = await ping_provider(
+        provider_id=body.provider,
+        base_url=base_url,
+        api_key=body.api_key,
+        model_string=body.model_string,
+    )
+
+    return {
+        "success": result.success,
+        "latency_ms": result.latency_ms,
+        "status_code": result.status_code,
+        "detail": result.detail,
+        "provider": body.provider,
+        "model_string": body.model_string,
+    }
+
+
+@app.post("/api/v1/models/{model_id}/ping")
+async def ping_saved_model(model_id: str) -> dict[str, Any]:
+    """Live health check for a model already stored in the database."""
+    row = await db.get_model_raw(model_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Model not found")
+
+    raw_key = db.vault.decrypt(str(row.get("encrypted_api_key", "")))
+    base_url = str(row.get("base_url", ""))
+    if not base_url:
+        base_url = await db.get_provider_default_url(str(row.get("provider", "")))
+
+    result = await ping_provider(
+        provider_id=str(row.get("provider", "openai")),
+        base_url=base_url,
+        api_key=raw_key,
+        model_string=str(row.get("model_string", "")),
+    )
+
+    # Update health status in DB
+    health = "HEALTHY" if result.success else "OFFLINE"
+    await db.update_model_health(model_id, health)
+
+    # Write to logs
+    await db.write_log(
+        target_alias=str(row.get("alias", "")),
+        status_code=result.status_code,
+        latency_ms=result.latency_ms,
+        error_msg="" if result.success else result.detail,
+    )
+
+    return {
+        "success": result.success,
+        "latency_ms": result.latency_ms,
+        "status_code": result.status_code,
+        "detail": result.detail,
+        "health_status": health,
+    }
 
 
 # ---------------------------------------------------------------------------

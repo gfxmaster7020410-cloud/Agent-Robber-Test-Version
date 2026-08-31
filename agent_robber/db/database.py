@@ -1,6 +1,6 @@
 """Async SQLite database layer for Agent Robber.
 
-Stores models (with encrypted API keys), secrets, and request logs.
+Stores models (with encrypted API keys), providers, secrets, and request logs.
 Uses aiosqlite for async access and Fernet for envelope encryption.
 """
 
@@ -37,6 +37,14 @@ CREATE TABLE IF NOT EXISTS models (
     created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS providers (
+    id                  TEXT PRIMARY KEY,
+    preset_name         TEXT NOT NULL,
+    category            TEXT NOT NULL DEFAULT 'cloud',
+    default_base_url    TEXT NOT NULL DEFAULT '',
+    auth_type           TEXT NOT NULL DEFAULT 'bearer'
+);
+
 CREATE TABLE IF NOT EXISTS secrets (
     id              TEXT PRIMARY KEY,
     secret_ref      TEXT UNIQUE NOT NULL,
@@ -54,6 +62,44 @@ CREATE TABLE IF NOT EXISTS logs (
     error_msg       TEXT NOT NULL DEFAULT ''
 );
 """
+
+DEFAULT_PROVIDERS: list[dict[str, str]] = [
+    {
+        "id": "openai",
+        "preset_name": "OpenAI",
+        "category": "cloud",
+        "default_base_url": "https://api.openai.com/v1",
+        "auth_type": "bearer",
+    },
+    {
+        "id": "anthropic",
+        "preset_name": "Anthropic",
+        "category": "cloud",
+        "default_base_url": "https://api.anthropic.com",
+        "auth_type": "x-api-key",
+    },
+    {
+        "id": "deepseek",
+        "preset_name": "DeepSeek",
+        "category": "cloud",
+        "default_base_url": "https://api.deepseek.com/v1",
+        "auth_type": "bearer",
+    },
+    {
+        "id": "ollama",
+        "preset_name": "Ollama",
+        "category": "local",
+        "default_base_url": "http://localhost:11434/v1",
+        "auth_type": "none",
+    },
+    {
+        "id": "groq",
+        "preset_name": "Groq",
+        "category": "cloud",
+        "default_base_url": "https://api.groq.com/openai/v1",
+        "auth_type": "bearer",
+    },
+]
 
 
 # ---------------------------------------------------------------------------
@@ -106,7 +152,7 @@ class Vault:
 # ---------------------------------------------------------------------------
 
 class Database:
-    """Async SQLite manager. Creates schema on first connect."""
+    """Async SQLite manager. Creates schema and seeds providers on first connect."""
 
     def __init__(self, db_path: Path | None = None) -> None:
         self.db_path = db_path or (Path.cwd() / ".robber" / "agent_robber.db")
@@ -142,6 +188,22 @@ class Database:
     async def _init_schema(self) -> None:
         db = await self._require()
         await db.executescript(SCHEMA_SQL)
+        await db.commit()
+        await self._seed_providers()
+
+    async def _seed_providers(self) -> None:
+        """Insert default provider presets if table is empty."""
+        db = await self._require()
+        async with db.execute("SELECT COUNT(*) FROM providers") as cur:
+            count = (await cur.fetchone())[0]
+        if count > 0:
+            return
+        for p in DEFAULT_PROVIDERS:
+            await db.execute(
+                "INSERT OR IGNORE INTO providers (id, preset_name, category, default_base_url, auth_type) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (p["id"], p["preset_name"], p["category"], p["default_base_url"], p["auth_type"]),
+            )
         await db.commit()
 
     # -- generic helpers ----------------------------------------------------
@@ -179,6 +241,22 @@ class Database:
                 raise
             finally:
                 await cur.close()
+
+    # -- providers ----------------------------------------------------------
+
+    async def get_providers(self) -> list[dict[str, Any]]:
+        return await self.fetchall(
+            "SELECT * FROM providers ORDER BY category, preset_name"
+        )
+
+    async def get_provider(self, provider_id: str) -> dict[str, Any] | None:
+        return await self.fetchone(
+            "SELECT * FROM providers WHERE id = ?", (provider_id,)
+        )
+
+    async def get_provider_default_url(self, provider_id: str) -> str:
+        row = await self.get_provider(provider_id)
+        return str(row["default_base_url"]) if row else ""
 
     # -- models CRUD --------------------------------------------------------
 
@@ -238,6 +316,12 @@ class Database:
         d["api_key"] = self.vault.decrypt(d.pop("encrypted_api_key", ""))
         d["is_active"] = bool(d.get("is_active", 0))
         return d
+
+    async def update_model_health(self, model_id: str, health_status: str) -> None:
+        await self.execute(
+            "UPDATE models SET health_status = ? WHERE id = ?",
+            (health_status, model_id),
+        )
 
     async def delete_model(self, model_id: str) -> bool:
         before = await self.get_model_raw(model_id)
