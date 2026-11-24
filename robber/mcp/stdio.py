@@ -219,6 +219,19 @@ class StdioSession:
             pass
         self.status = "stopped"
 
+    @property
+    def alive(self) -> bool:
+        return self.proc is not None and self.proc.returncode is None
+
+    async def ping(self, timeout: float = 5.0) -> bool:
+        if not self.alive or self.status != "ready":
+            return False
+        try:
+            await self.request("ping", {}, timeout=timeout)
+            return True
+        except Exception:
+            return False
+
     async def call(self, tool: str, arguments: dict[str, Any] | None) -> str:
         result = await self.request(
             "tools/call",

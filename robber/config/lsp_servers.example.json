@@ -1,0 +1,50 @@
+{
+
+  "version": "1.0",
+
+  "memory_bound_mb": 512,
+
+  "servers": {
+
+    "python": {
+
+      "enabled": false,
+
+      "command": [],
+
+      "languages": ["python"],
+
+      "root_markers": ["pyproject.toml", "setup.py", "requirements.txt", ".git"]
+
+    },
+
+    "typescript": {
+
+      "enabled": false,
+
+      "command": [],
+
+      "languages": ["typescript", "javascript", "typescriptreact", "javascriptreact"],
+
+      "root_markers": ["package.json", "tsconfig.json", ".git"],
+
+      "env": {"NODE_OPTIONS": "--max-old-space-size=512"}
+
+    },
+
+    "go": {
+
+      "enabled": false,
+
+      "command": [],
+
+      "languages": ["go"],
+
+      "root_markers": ["go.mod", "go.sum", ".git"]
+
+    }
+
+  }
+
+}
+

@@ -1,0 +1,58 @@
+{
+  "version": "1.0",
+  "memory_bound_mb": 512,
+  "servers": {
+    "python": {
+      "enabled": true,
+      "command": [
+        "D:\\Users\\SAIF ALI KHAN\\AppData\\Local\\Programs\\Python\\Python312\\Scripts\\pyright-langserver.EXE",
+        "--stdio"
+      ],
+      "languages": [
+        "python"
+      ],
+      "root_markers": [
+        "pyproject.toml",
+        "setup.py",
+        "requirements.txt",
+        ".git"
+      ]
+    },
+    "typescript": {
+      "enabled": true,
+      "command": [
+        "D:\\Program Files\\nodejs\\node.EXE",
+        "D:\\Users\\SAIF ALI KHAN\\AppData\\Roaming\\npm\\node_modules\\typescript-language-server\\lib\\cli.mjs",
+        "--stdio"
+      ],
+      "languages": [
+        "typescript",
+        "javascript",
+        "typescriptreact",
+        "javascriptreact"
+      ],
+      "root_markers": [
+        "package.json",
+        "tsconfig.json",
+        ".git"
+      ],
+      "env": {
+        "NODE_OPTIONS": "--max-old-space-size=512"
+      }
+    },
+    "go": {
+      "enabled": true,
+      "command": [
+        "D:\\Users\\SAIF ALI KHAN\\go\\bin\\gopls.EXE"
+      ],
+      "languages": [
+        "go"
+      ],
+      "root_markers": [
+        "go.mod",
+        "go.sum",
+        ".git"
+      ]
+    }
+  }
+}

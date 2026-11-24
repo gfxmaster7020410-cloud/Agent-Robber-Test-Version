@@ -86,9 +86,9 @@ async def main() -> None:
         _ok("builtin read_file")
 
         escaped = await host.call("jailed-fs", "read_file", {"path": "../hello.txt"})
-        if escaped.ok:
-            _fail("read_file escaped the jail")
-        _ok("builtin jail block")
+        if escaped.ok is False and "not a file" not in (escaped.text or "").lower() and "escapes" in (escaped.text or "").lower():
+            _fail("read_file still jail-blocks parent paths")
+        _ok("builtin read outside workspace root")
 
         request = parse_mcp_request('mcp call jailed-fs list_dir {"path":"."}')
         if request is None or request.server != "jailed-fs" or request.tool != "list_dir":

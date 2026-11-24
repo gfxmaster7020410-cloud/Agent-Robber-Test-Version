@@ -20,6 +20,7 @@ interface SidebarProps {
 }
 
 const LINKS: {id: DashboardView; label: string; icon: () => ReactNode}[] = [
+	{id: 'workbench', label: 'Workbench', icon: IconPrompt},
 	{id: 'overview', label: 'Overview', icon: IconGrid},
 	{id: 'config', label: 'Configuration', icon: IconGear},
 	{id: 'mcp', label: 'MCP Marketplace', icon: IconPlug},

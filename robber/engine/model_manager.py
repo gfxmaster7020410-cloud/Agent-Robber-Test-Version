@@ -7,8 +7,11 @@ import re
 from typing import Any
 
 from robber.db.database import Database
+from robber.engine.discovery import DiscoveryResult, discover_and_ingest, resolve_endpoint_secret
+from robber.engine.failover_pool import get_failover_pool, is_pinned_live_route
+from robber.engine.model_ids import completion_model_ids
 from robber.engine.presets import (
-    COMBO_TIERS,
+    PRESETS,
     batch_to_tier,
     get_preset,
     normalize_tier,
@@ -37,6 +40,59 @@ CODING_RE = re.compile(
 
 TaskKind = str  # reasoning | coding | general
 
+FREE_ROUTE_SEEDS: tuple[dict[str, Any], ...] = (
+    {
+        "id": "openrouter-nemotron-35-free",
+        "name": "OpenRouter Nemotron 3.5 Lightning",
+        "provider_preset": "OPENROUTER",
+        "model_string": "nvidia/nemotron-3.5-lightning:free",
+        "context_length": 1_000_000,
+        "cost_per_1m": 0.0,
+        "api_key": "",
+        "is_active": True,
+    },
+    {
+        "id": "omniroute-nemotron-35",
+        "name": "OmniRoute Nemotron 3.5",
+        "provider_preset": "OMNIROUTE",
+        "model_string": "nvidia/nemotron-3.5-lightning:free",
+        "context_length": 128000,
+        "cost_per_1m": 0.0,
+        "api_key": "",
+        "is_active": True,
+    },
+    {
+        "id": "tokenrouter-primary",
+        "name": "Token Router",
+        "provider_preset": "TOKEN_ROUTER",
+        "model_string": "gpt-4o-mini",
+        "context_length": 128000,
+        "cost_per_1m": 0.0,
+        "api_key": "",
+        "is_active": True,
+    },
+    {
+        "id": "groq-llama-33",
+        "name": "Groq Llama 3.3",
+        "provider_preset": "GROQ",
+        "model_string": "llama-3.3-70b-versatile",
+        "context_length": 128000,
+        "cost_per_1m": 0.0,
+        "api_key": "",
+        "is_active": True,
+    },
+    {
+        "id": "gemini-25-flash",
+        "name": "Gemini 2.5 Flash",
+        "provider_preset": "GEMINI",
+        "model_string": "gemini-2.5-flash",
+        "context_length": 1_000_000,
+        "cost_per_1m": 0.0,
+        "api_key": "",
+        "is_active": True,
+    },
+)
+
 
 class CustomModelManager:
     """Async orchestration manager. API keys never leave the process in logs."""
@@ -48,6 +104,7 @@ class CustomModelManager:
         self._lock = asyncio.Lock()
         self.models_cache: list[dict[str, Any]] = []
         self.combos_cache: list[dict[str, Any]] = []
+        self.last_discovery: DiscoveryResult | None = None
 
     @property
     def route_mode(self) -> str:
@@ -68,6 +125,11 @@ class CustomModelManager:
         entry_id = await self.db.add_model(model_data)
         await self._sync_route(entry_id)
         await self.refresh_cache()
+        self.last_discovery = await self.discover_from_row(
+            entry_id,
+            api_key=str(model_data.get("api_key") or ""),
+            force=True,
+        )
         return entry_id
 
     async def update_model(self, model_id: str, updates: dict[str, Any]) -> bool:
@@ -75,6 +137,12 @@ class CustomModelManager:
         if ok:
             await self._sync_route(model_id)
             await self.refresh_cache()
+            if any(key in updates for key in ("base_url", "api_key", "custom_headers", "provider_preset")):
+                self.last_discovery = await self.discover_from_row(
+                    model_id,
+                    api_key=str(updates.get("api_key") or ""),
+                    force=True,
+                )
         return ok
 
     async def delete_model(self, model_id: str) -> bool:
@@ -105,8 +173,12 @@ class CustomModelManager:
         return preset_public()
 
     def classify_task(self, prompt: str, mode: str = "act") -> TaskKind:
+        from robber.intent import is_inquiry
+
         if (mode or "").strip().lower() == "plan":
             return "reasoning"
+        if is_inquiry(prompt):
+            return "general"
         text = prompt or ""
         if REASONING_RE.search(text):
             return "reasoning"
@@ -153,23 +225,42 @@ class CustomModelManager:
         *,
         mode: str = "act",
         tier: str | None = None,
+        limit: int = 4,
     ) -> list[Engine]:
         wanted = normalize_tier(tier or self.route_mode)
         combo = await self.db.get_combo_for_tier(wanted)
-        if combo is None:
-            return []
         kind = self.classify_task(prompt, mode)
-        ordered_ids = await self._pool_for(combo, kind)
+        ordered_ids = await self._pool_for(combo, kind) if combo is not None else []
         engines: list[Engine] = []
         seen: set[str] = set()
+        pool = get_failover_pool()
+        cap = max(1, min(8, int(limit)))
         for model_id in ordered_ids:
             if model_id in seen:
                 continue
             seen.add(model_id)
             engine = await self.engine_for_id(model_id)
-            if engine is not None and engine.live:
-                engines.append(engine)
-        return engines
+            if engine is None or not engine.live:
+                continue
+            if not is_pinned_live_route(
+                engine.provider, engine.litellm_model or engine.model_string or engine.label
+            ):
+                continue
+            if pool.is_quarantined(engine.model_string or engine.label):
+                continue
+            engines.append(engine)
+            if len(engines) >= cap:
+                return engines
+        for extra in pool.engines_for(kind, limit=cap):
+            key = extra.model_string or extra.label
+            if key in seen or extra.label in seen:
+                continue
+            seen.add(key)
+            seen.add(extra.label)
+            engines.append(extra)
+            if len(engines) >= cap:
+                break
+        return engines[:cap]
 
     async def engine_for_id(self, model_id: str) -> Engine | None:
         row = await self.db.get_model_row(model_id)
@@ -179,9 +270,104 @@ class CustomModelManager:
 
     async def bootstrap(self) -> None:
         await self.db.init_schema()
+        await self.ensure_free_routes()
         await self.refresh_cache()
         for row in self.models_cache:
             await self._sync_route(str(row["id"]))
+        from robber.router import set_hybrid_from_labels
+
+        set_hybrid_from_labels(
+            [
+                "OpenRouter Nemotron 3.5 Lightning",
+                "Groq Llama 3.3",
+                "Gemini 2.5 Flash",
+            ]
+        )
+        pool = get_failover_pool()
+        pool.set_key_resolver(resolve_endpoint_secret)
+        pool.hydrate_from_cache()
+
+    async def ensure_free_routes(self) -> None:
+        """Register BYOK free/cheap routes. Secrets stay in env, never SQLite."""
+        for row in FREE_ROUTE_SEEDS:
+            await self.db.add_model(dict(row))
+
+    async def discover_from_row(
+        self,
+        model_id: str,
+        *,
+        api_key: str = "",
+        force: bool = False,
+    ) -> DiscoveryResult | None:
+        row = await self.db.get_model_row(model_id)
+        if row is None:
+            return None
+        public = self.db._public_model(row)
+        base = str(public.get("base_url") or "").strip()
+        protocol = str(public.get("protocol_type") or PROTOCOL_OPENAI)
+        if not base or protocol != PROTOCOL_OPENAI:
+            return None
+        secret = api_key.strip() or await self._secret_for(row)
+        preset = str(public.get("provider_preset") or "CUSTOM")
+        headers = public.get("custom_headers") if isinstance(public.get("custom_headers"), dict) else {}
+        hint = get_preset(preset).get("env_hint") or ""
+        result = await discover_and_ingest(
+            provider_id=preset.lower(),
+            base_url=base,
+            api_key=secret,
+            extra_headers=dict(headers or {}),
+            env_hint=str(hint),
+            force=force,
+        )
+        self.last_discovery = result
+        return result
+
+    async def discover_known(self, *, force: bool = False) -> list[DiscoveryResult]:
+        results: list[DiscoveryResult] = []
+        seen: set[str] = set()
+        for preset in PRESETS.values():
+            if str(preset.get("protocol") or "") != PROTOCOL_OPENAI:
+                continue
+            base = str(preset.get("base_url") or "").strip().rstrip("/")
+            if not base or base in seen:
+                continue
+            secret = resolve_endpoint_secret(str(preset["id"]), str(preset.get("env_hint") or ""))
+            if not secret:
+                continue
+            seen.add(base)
+            result = await discover_and_ingest(
+                provider_id=str(preset["id"]).lower(),
+                base_url=base,
+                api_key=secret,
+                extra_headers=dict(preset.get("headers") or {}),
+                env_hint=str(preset.get("env_hint") or ""),
+                force=force,
+            )
+            results.append(result)
+        for row in self.models_cache:
+            base = str(row.get("base_url") or "").strip().rstrip("/")
+            protocol = str(row.get("protocol_type") or "")
+            if not base or base in seen or protocol != PROTOCOL_OPENAI:
+                continue
+            raw = await self.db.get_model_row(str(row["id"]))
+            if raw is None:
+                continue
+            secret = await self._secret_for(raw)
+            if not secret:
+                continue
+            seen.add(base)
+            result = await discover_and_ingest(
+                provider_id=str(row.get("provider_preset") or "custom").lower(),
+                base_url=base,
+                api_key=secret,
+                extra_headers=dict(row.get("custom_headers") or {}),
+                env_hint=str(get_preset(str(row.get("provider_preset") or "CUSTOM")).get("env_hint") or ""),
+                force=force,
+            )
+            results.append(result)
+        if results:
+            self.last_discovery = results[-1]
+        return results
 
     async def _secret_for(self, row: dict[str, Any]) -> str:
         stored = await self.db.get_model_secret(str(row["id"]))
@@ -194,17 +380,23 @@ class CustomModelManager:
         provider_map = {
             "ANTHROPIC_API_KEY": "anthropic",
             "OPENAI_API_KEY": "openai",
+            "OPENROUTER_API_KEY": "openrouter",
             "GROQ_API_KEY": "groq",
             "MISTRAL_API_KEY": "mistral",
             "COHERE_API_KEY": "cohere",
             "DEEPSEEK_API_KEY": "deepseek",
             "OPENCODE_API_KEY": "opencode",
             "TOGETHER_API_KEY": "together",
+            "LITELLM_MASTER_KEY": "litellm",
+            "NEWAPI_API_KEY": "new_api",
+            "OMNIROUTE_API_KEY": "omniroute",
+            "TOKENROUTER_API_KEY": "tokenrouter",
         }
         mapped = provider_map.get(hint)
         if mapped:
             return get_key(mapped) or ""
-        return ""
+        preset_id = str(row.get("provider_preset") or "").strip().lower()
+        return get_key(preset_id) or resolve_endpoint_secret(preset_id, str(hint)) or ""
 
     async def _row_to_engine(self, row: dict[str, Any]) -> Engine:
         public = self.db._public_model(row)
@@ -262,6 +454,57 @@ class CustomModelManager:
                 fallback_label,
                 self.active_batch,
                 protocol,
+                model_string,
+            )
+        http_model, groq_litellm = completion_model_ids(
+            model_string=model_string,
+            litellm_model=None,
+            api_base=base,
+        )
+        if groq_litellm.startswith("groq/") or preset == "GROQ":
+            return Engine(
+                name,
+                groq_litellm if groq_litellm.startswith("groq/") else f"groq/{http_model}",
+                "groq",
+                secret or None,
+                base or None,
+                headers,
+                fallback_label,
+                self.active_batch,
+                protocol,
+                http_model or model_string,
+            )
+        if preset == "OPENROUTER":
+            slug = model_string
+            if not slug.startswith("openrouter/"):
+                slug = f"openrouter/{slug}"
+            return Engine(
+                name,
+                slug,
+                "openrouter",
+                secret or None,
+                None,
+                headers,
+                fallback_label,
+                self.active_batch,
+                protocol,
+                model_string,
+            )
+        if preset in {"OMNIROUTE", "TOKEN_ROUTER"}:
+            provider = "omniroute" if preset == "OMNIROUTE" else "tokenrouter"
+            litellm = (
+                model_string if model_string.startswith("openai/") else f"openai/{model_string}"
+            )
+            return Engine(
+                name,
+                litellm,
+                provider,
+                secret or None,
+                base or str(get_preset(preset).get("base_url") or "") or None,
+                headers,
+                fallback_label,
+                self.active_batch,
+                PROTOCOL_OPENAI,
                 model_string,
             )
         litellm = model_string if "/" in model_string else f"openai/{model_string}"

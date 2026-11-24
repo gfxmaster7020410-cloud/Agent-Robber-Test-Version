@@ -13,7 +13,6 @@ const wait = async (ms: number) => {
 	});
 };
 
-const type = async (text: string) => {
 	for (const char of text) {
 		instance.stdin.write(char);
 		await wait(15);
@@ -23,13 +22,11 @@ const type = async (text: string) => {
 await wait(700);
 
 if (!(instance.lastFrame() ?? '').includes('Linked')) {
-	console.error(
-		`verify-frame needs the daemon at ${DEFAULT_DAEMON_URL}.\n` +
-			'Start it from the project root with:  python server.py',
-	);
+	console.error(`verify-frame needs the daemon at ${DEFAULT_DAEMON_URL}.\n` +
+				  'Start it from the project root with: python server.py');
 	instance.unmount();
 	process.exit(1);
-}
+}}
 
 await type('scan the project files');
 await wait(100);

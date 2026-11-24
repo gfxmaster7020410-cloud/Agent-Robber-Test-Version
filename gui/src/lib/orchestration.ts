@@ -196,7 +196,7 @@ function detailFromBody(body: unknown, fallback: string): string {
 	return fallback;
 }
 
-export async function orchFetch<T>(path: string, init?: RequestInit): Promise<T> {
+async function orchFetch<T>(path: string, init?: RequestInit): Promise<T> {
 	let response: Response;
 	try {
 		response = await fetch(`${ORCH_API}${path}`, {

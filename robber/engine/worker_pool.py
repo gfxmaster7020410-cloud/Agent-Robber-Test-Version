@@ -184,3 +184,7 @@ class WorkerPool:
         )
         if self.hub:
             await self.hub.broadcast(payload)
+
+    async def stop_all(self) -> None:
+        for profile_id in list(self.workers):
+            await self.stop_worker(profile_id)

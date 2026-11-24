@@ -1,0 +1,50 @@
+/* Agent Robber typography — binaries live in /public/fonts (copied from Downloads/Fonts).
+   Do not point @font-face at absolute Windows paths; the desktop bundle would miss them. */
+
+@font-face {
+	font-family: "BaseNeue";
+	src: url("/fonts/base-neue/BaseNeue-Regular.ttf") format("truetype");
+	font-weight: 400;
+	font-style: normal;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: "BaseNeue";
+	src: url("/fonts/base-neue/BaseNeue-Medium.ttf") format("truetype");
+	font-weight: 500;
+	font-style: normal;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: "BaseNeue";
+	src: url("/fonts/base-neue/BaseNeue-SemiBold.ttf") format("truetype");
+	font-weight: 600;
+	font-style: normal;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: "BogitaMono";
+	src: url("/fonts/bogita-mono/BogitaMono-Regular.otf") format("opentype");
+	font-weight: 400;
+	font-style: normal;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: "BogitaMono";
+	src: url("/fonts/bogita-mono/BogitaMono-Medium.otf") format("opentype");
+	font-weight: 500;
+	font-style: normal;
+	font-display: swap;
+}
+
+@font-face {
+	font-family: "BogitaMono";
+	src: url("/fonts/bogita-mono/BogitaMono-SemiBold.otf") format("opentype");
+	font-weight: 600;
+	font-style: normal;
+	font-display: swap;
+}

@@ -9,7 +9,8 @@ import traceback
 from dataclasses import dataclass
 from pathlib import Path
 
-from robber.jail import JailError, resolve_inside, workspace_root
+from robber.jail import JailError, display_path, resolve_inside, workspace_root
+from robber.security.perimeter import validate_file_mutation
 from robber.patch import BLOCKED_NAMES, _apply_hunks, extract_diff
 
 PLUS_HEADER = re.compile(r"^\+\+\+ (?:[ab]/)?(.+)$", re.MULTILINE)
@@ -24,7 +25,7 @@ class PatchResult:
 
 
 class JailedPatchApplicator:
-    """Parse a unified diff, keep the target inside ROBBER_WORKSPACE, compile, then write."""
+    """Parse a unified diff, compile Python, then write. Paths may be anywhere on disk."""
 
     def __init__(self, root: Path | None = None) -> None:
         self.root = (root or workspace_root()).resolve()
@@ -41,22 +42,10 @@ class JailedPatchApplicator:
             raise JailError("empty patch target")
         if text in {"/dev/null", "nul"}:
             raise JailError("refusing to patch /dev/null")
-        for part in re.split(r"[\\/]", text):
-            if part == "..":
-                raise JailError("path traversal denied")
         if Path(text).name in BLOCKED_NAMES:
             raise JailError(f"refusing to patch protected file: {text}")
         target = resolve_inside(self.root, text)
-        
-        # Anti-tampering check: block access to internal directories/files
-        restricted_prefixes = ["robber", "gui", "server.py"]
-        if any(part in restricted_prefixes for part in target.relative_to(self.root).parts):
-            raise JailError(f"modification to internal project files denied: {text}")
-
-        try:
-            target.relative_to(self.root)
-        except ValueError as exc:
-            raise JailError(f"path escapes workspace jail: {relative}") from exc
+        validate_file_mutation(str(target), is_dev_mode=False)
         return target
 
     def verify_python(self, source: str, filename: str) -> None:
@@ -79,8 +68,10 @@ class JailedPatchApplicator:
             updated = _apply_hunks(original, diff)
             if target.suffix.lower() == ".py":
                 self.verify_python(updated, str(target))
-            target.write_text(updated, encoding="utf-8")
-            rel = str(target.relative_to(self.root))
+            rel = display_path(target, self.root)
+            from robber.mutations import get_mutations
+
+            get_mutations().write_file(rel, updated, action="edit")
             return PatchResult(True, rel, f"patched {rel}")
         except SyntaxError as exc:
             tb = str(exc)

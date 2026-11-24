@@ -11,8 +11,25 @@ import {ConsoleView} from './views/Console';
 import {LogsView} from './views/Logs';
 import {MarketplaceView} from './views/Marketplace';
 import type {DashboardView} from './lib/types';
+import {Workbench} from './workbench/Workbench';
+import {formatWindow} from './lib/contextWindow';
 
 const THEME_KEY = 'robber-theme';
+const VIEWS: readonly DashboardView[] = [
+	'workbench',
+	'overview',
+	'config',
+	'memo-store',
+	'console',
+	'logs',
+	'fb-shark',
+	'mcp',
+];
+
+function parseDashboardView(hash: string): DashboardView {
+	const raw = hash.replace(/^#\/?/, '').split(/[/?#]/)[0]?.toLowerCase() ?? '';
+	return VIEWS.includes(raw as DashboardView) ? (raw as DashboardView) : 'workbench';
+}
 
 export default function App() {
 	const {
@@ -24,6 +41,9 @@ export default function App() {
 		suiteEvents,
 		sendPrompt,
 		sendSlash,
+		setDashboardMode,
+		triggerStepAction,
+		killTask,
 		setMode,
 		setControlMode,
 		approveHeal,
@@ -51,13 +71,9 @@ export default function App() {
 		lastMcpResult,
 		pushLocal,
 		clear,
+		purge,
 	} = useDaemon();
-	const [view, setView] = useState<DashboardView>(() => {
-		const hash = window.location.hash.replace('#', '') as DashboardView;
-		return ['overview', 'config', 'memo-store', 'console', 'logs', 'fb-shark', 'mcp'].includes(hash)
-			? hash
-			: 'overview';
-	});
+	const [view, setView] = useState<DashboardView>(() => parseDashboardView(window.location.hash));
 	const [theme, setThemeLocal] = useState<'dark' | 'light'>(() => {
 		const stored = window.localStorage.getItem(THEME_KEY);
 		return stored === 'light' ? 'light' : 'dark';
@@ -75,15 +91,17 @@ export default function App() {
 	}, [theme]);
 
 	useEffect(() => {
-		window.location.hash = view;
+		window.location.hash = view === 'workbench' ? 'workbench' : view;
 	}, [view]);
 
 	useEffect(() => {
+		if (view === 'workbench') {
+			return;
+		}
 		pushLocal(
 			'system',
 			'Control Center attached. The TUI is the agent; this dashboard configures, monitors, and maintains it.',
 		);
-		// Seed once on mount.
 		// eslint-disable-next-line react-hooks/exhaustive-deps
 	}, []);
 
@@ -137,7 +155,7 @@ export default function App() {
 						`loop     ${daemon?.loop?.phase ?? '—'}`,
 						`mcp      ${daemon?.mcp ? `${daemon.mcp.enabled} enabled / ${daemon.mcp.tools.length} tools` : '—'}`,
 						`ssot     ${daemon ? `${daemon.ssotFiles} files / ${daemon.ssotChunks} chunks${daemon.ssotWatching ? ' · watching' : ''}` : '—'}`,
-						`window   ${daemon ? `${daemon.contextWindow.toLocaleString()} · packed ${daemon.contextPacked.toLocaleString()}` : '—'}`,
+						`window   ${daemon ? `${formatWindow(daemon.contextWindow)} · packed ${formatWindow(daemon.contextPacked)}` : '—'}`,
 						`clients  ${daemon?.clients ?? 0}`,
 					].join('\n'),
 				);
@@ -216,13 +234,24 @@ export default function App() {
 				pushLocal(
 					'system',
 					daemon
-						? `SSOT window ${daemon.contextWindow.toLocaleString()} · packed ${daemon.contextPacked.toLocaleString()} · ${daemon.contextHits} hits`
+						? `SSOT window ${formatWindow(daemon.contextWindow)} · packed ${formatWindow(daemon.contextPacked)} · ${daemon.contextHits} hits`
 						: 'SSOT window — daemon offline (default 1T)',
 				);
 				return;
 			}
 			if (verb === 'mcp' || verb === 'mcps') {
 				pushLocal('error', 'Daemon offline — cannot list MCP servers.');
+				return;
+			}
+			if (
+				verb === 'undo' ||
+				verb === 'redo' ||
+				verb === 'accept' ||
+				verb === 'revert' ||
+				verb === 'accept-all' ||
+				verb === 'revert-all'
+			) {
+				pushLocal('error', `Daemon offline — cannot ${verb}.`);
 				return;
 			}
 			pushLocal('error', `Unknown command: ${command}`);
@@ -253,6 +282,66 @@ export default function App() {
 	);
 
 	const statusLabel = busyPhase?.label.toUpperCase() ?? (busy ? 'BUSY' : 'IDLE');
+
+	if (view === 'workbench') {
+		return (
+			<Workbench
+				daemon={daemon}
+				messages={messages}
+				busy={busyPhase}
+				onSubmit={handleSubmit}
+				onUndo={() => {
+					if (!triggerStepAction('undo') && !sendSlash('undo', [], '/undo')) {
+						pushLocal('error', 'Daemon offline — cannot undo the last write.');
+					}
+				}}
+				onRedo={() => {
+					if (!triggerStepAction('redo') && !sendSlash('redo', [], '/redo')) {
+						pushLocal('error', 'Daemon offline — cannot redo the last write.');
+					}
+				}}
+				onAccept={() => {
+					approveHeal();
+					if (!triggerStepAction('accept_all') && !sendSlash('accept', [], '/accept')) {
+						pushLocal('system', 'Nothing pending to accept.');
+					}
+				}}
+				onRevert={() => {
+					rejectHeal();
+					if (!triggerStepAction('revert_all') && !sendSlash('revert', [], '/revert')) {
+						pushLocal('error', 'Daemon offline — cannot revert.');
+					}
+				}}
+				onKill={() => {
+					if (!killTask()) {
+						purge();
+					}
+				}}
+				onPlan={() => {
+					if (!setDashboardMode('Plan Mode') && !setMode('plan')) {
+						pushLocal('error', 'Daemon offline — cannot switch to plan mode.');
+					}
+				}}
+				onHybrid={() => {
+					if (!setDashboardMode('Hybrid Multi-LLM')) {
+						pushLocal('error', 'Daemon offline — cannot arm Hybrid Multi-LLM.');
+					}
+				}}
+				onControl={() => {
+					const next = daemon?.controlMode === 'manual' ? 'Autonomous' : 'Manual';
+					if (!setDashboardMode(next) && !setControlMode(next.toLowerCase() as 'manual' | 'autonomous')) {
+						pushLocal('error', 'Daemon offline — cannot switch the control suite.');
+					}
+				}}
+				onBeast={() => {
+					if (!setDashboardMode('Beast Mode') && !sendSlash('mode', ['best'], '/mode best')) {
+						pushLocal('error', 'Daemon offline — cannot switch Beast routing.');
+					}
+				}}
+				onView={setView}
+			/>
+		);
+	}
 
 	return (
 		<>

@@ -20,6 +20,29 @@ const CANVAS_DOCK_HEIGHT = 6;
 const WIDE_CANVAS = 120;
 const RESERVED_LINES = 9;
 
+function formatWindow(value: number): string {
+	const n = Math.trunc(value);
+	if (!Number.isFinite(n) || n < 0) {
+		return '—';
+	}
+	if (n === 0) {
+		return '0';
+	}
+	if (n >= 1_000_000_000_000 && n % 1_000_000_000_000 === 0) {
+		return `${n / 1_000_000_000_000}T`;
+	}
+	if (n >= 1_000_000_000 && n % 1_000_000_000 === 0) {
+		return `${n / 1_000_000_000}B`;
+	}
+	if (n >= 1_000_000 && n % 1_000_000 === 0) {
+		return `${n / 1_000_000}M`;
+	}
+	if (n >= 1_000 && n % 1_000 === 0) {
+		return `${n / 1_000}K`;
+	}
+	return n.toLocaleString();
+}
+
 const OFFLINE_HINT = [
 	'Daemon unreachable — start it from the project root:',
 	'',
@@ -137,7 +160,7 @@ export default function App({
 						`engine   ${daemon?.engine ?? '—'}`,
 						`live     ${daemon?.live === true ? 'yes' : 'no'}`,
 						`ssot     ${daemon ? `${daemon.ssotFiles} files / ${daemon.ssotChunks} chunks (${daemon.ssotBackend}, ${daemon.ssotSkipped} skipped, watch ${daemon.ssotWatching ? 'on' : 'off'})` : '—'}`,
-						`window   ${daemon ? `${daemon.contextWindow.toLocaleString()} · packed ${daemon.contextPacked.toLocaleString()}` : '—'}`,
+						`window   ${daemon ? `${formatWindow(daemon.contextWindow)} · packed ${formatWindow(daemon.contextPacked)}` : '—'}`,
 						`theme    ${daemon?.theme ?? 'dark'}`,
 						`canvas   ${canvasOpen ? 'on' : 'off'}`,
 					].join('\n'),

@@ -8,11 +8,13 @@ import signal
 import sys
 import time
 from collections import deque
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from robber.jail import JailError, resolve_inside
+from robber.tools.command_guard import sanitize_argv
 
 SECRET_MARKERS = ("API_KEY", "SECRET", "TOKEN", "PASSWORD", "PRIVATE_KEY")
 RING_SIZE = 5000
@@ -98,6 +100,9 @@ class TerminalSupervisor:
         """Launch a process without waiting — used by /run for dev servers."""
         if not argv:
             raise JailError("empty command")
+        check = sanitize_argv(argv, workspace=self.root)
+        if not check.allowed:
+            raise JailError(check.reason or "command blocked")
         workdir = resolve_inside(self.root, cwd) if cwd else self.root
         kwargs: dict[str, Any] = {
             "cwd": str(workdir),
@@ -135,9 +140,13 @@ class TerminalSupervisor:
         *,
         timeout: float = DEFAULT_TIMEOUT,
         cwd: str | None = None,
+        on_line: Callable[[str], Awaitable[None] | None] | None = None,
     ) -> CommandResult:
         if not argv:
             raise JailError("empty command")
+        check = sanitize_argv(argv, workspace=self.root)
+        if not check.allowed:
+            raise JailError(check.reason or "command blocked")
         workdir = resolve_inside(self.root, cwd) if cwd else self.root
         kwargs: dict[str, Any] = {
             "cwd": str(workdir),
@@ -152,24 +161,48 @@ class TerminalSupervisor:
         job = Job(pid=proc.pid, argv=tuple(argv), started=time.time())
         self.jobs[proc.pid] = job
         timed_out = False
+        chunks: list[str] = []
+
+        async def _pump() -> None:
+            assert proc.stdout is not None
+            while True:
+                line = await proc.stdout.readline()
+                if not line:
+                    break
+                text = line.decode("utf-8", errors="replace")
+                chunks.append(text)
+                self._record(text)
+                if on_line is not None:
+                    maybe = on_line(text)
+                    if asyncio.iscoroutine(maybe):
+                        await maybe
+
         try:
-            raw, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            await asyncio.wait_for(_pump(), timeout=timeout)
+            await asyncio.wait_for(proc.wait(), timeout=2)
         except asyncio.TimeoutError:
             timed_out = True
             await self.kill(proc.pid)
             try:
-                raw, _ = await asyncio.wait_for(proc.communicate(), timeout=2)
+                await asyncio.wait_for(_pump(), timeout=2)
             except (asyncio.TimeoutError, ProcessLookupError):
-                raw = b""
+                pass
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=2)
+            except asyncio.TimeoutError:
+                pass
             job.exit_code = -1
         else:
             job.exit_code = proc.returncode
         job.running = False
-        text = raw.decode("utf-8", errors="replace") if raw else ""
+        text = "".join(chunks)
         if timed_out:
             text = (text + "\n[watchdog] timed out, process killed").strip()
-        for line in text.splitlines() or [text]:
-            self._record(line)
+            self._record("[watchdog] timed out, process killed")
+            if on_line is not None:
+                maybe = on_line("[watchdog] timed out, process killed\n")
+                if asyncio.iscoroutine(maybe):
+                    await maybe
         return CommandResult(
             argv=tuple(argv),
             output=text.strip() or "(no output)",

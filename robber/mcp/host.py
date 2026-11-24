@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 import re
 from dataclasses import dataclass
 from typing import Any
 
+from robber.config import MCP_PING_TIMEOUT, MCP_WATCHDOG_SECONDS
 from robber.jail import JailError
 from robber.mcp.builtin import call_builtin, list_builtin_tools
 from robber.mcp.catalog import (
@@ -18,6 +21,8 @@ from robber.mcp.catalog import (
 )
 from robber.mcp.stdio import StdioSession
 from robber.terminal import TerminalSupervisor
+
+logger = logging.getLogger(__name__)
 
 QUALIFIED_RE = re.compile(r"^mcp__([a-z0-9][a-z0-9._-]*)__([A-Za-z0-9._-]+)$")
 CALL_RE = re.compile(
@@ -46,6 +51,8 @@ class McpHost:
         self._supervisor: TerminalSupervisor | None = None
         self._stdio: dict[str, StdioSession] = {}
         self._started = False
+        self._watchdog: asyncio.Task[None] | None = None
+        self._watchdog_restarts = 0
 
     @property
     def started(self) -> bool:
@@ -69,11 +76,20 @@ class McpHost:
                 if session is not None:
                     session.status = "error"
                     session.error = str(exc)
+        self._watchdog = asyncio.create_task(self._watchdog_loop())
 
     async def stop(self) -> None:
+        self._started = False
+        task = self._watchdog
+        self._watchdog = None
+        if task is not None:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         sessions = list(self._stdio.values())
         self._stdio.clear()
-        self._started = False
         for session in sessions:
             await session.stop()
 
@@ -177,6 +193,11 @@ class McpHost:
             "tools": tools_out,
             "enabled": enabled,
             "started": self._started,
+            "watchdog": {
+                "running": self._watchdog is not None and not self._watchdog.done(),
+                "interval": MCP_WATCHDOG_SECONDS,
+                "restarts": self._watchdog_restarts,
+            },
         }
 
     def prompt_catalog(self) -> str:
@@ -215,7 +236,7 @@ class McpHost:
         if row.get("kind") == "builtin":
             return
         session = self._stdio.get(server_id)
-        if session is not None and session.status == "ready":
+        if session is not None and session.status == "ready" and session.alive:
             return
         if session is not None:
             await session.stop()
@@ -227,6 +248,45 @@ class McpHost:
         session = self._stdio.pop(server_id, None)
         if session is not None:
             await session.stop()
+
+    async def _watchdog_loop(self) -> None:
+        try:
+            while self._started:
+                await asyncio.sleep(MCP_WATCHDOG_SECONDS)
+                await self.watchdog_tick()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.debug("mcp watchdog loop stopped", exc_info=True)
+
+    async def watchdog_tick(self) -> int:
+        """Ping enabled stdio servers and restart the ones that are down. Returns restart count."""
+        restarted = 0
+        if not self._started:
+            return 0
+        for row in load_catalog():
+            if not row.get("enabled") or row.get("kind") == "builtin":
+                continue
+            server_id = str(row.get("id") or "")
+            if not server_id:
+                continue
+            session = self._stdio.get(server_id)
+            healthy = (
+                session is not None
+                and session.status == "ready"
+                and session.alive
+                and await session.ping(MCP_PING_TIMEOUT)
+            )
+            if healthy:
+                continue
+            try:
+                await self._ensure_server(server_id)
+                restarted += 1
+                self._watchdog_restarts += 1
+                logger.info("mcp watchdog restarted stdio server %s", server_id)
+            except Exception as exc:
+                logger.warning("mcp watchdog failed to restart %s (%s)", server_id, type(exc).__name__)
+        return restarted
 
 
 _HOST: McpHost | None = None

@@ -1,4 +1,4 @@
-"""In-process MCP adapters — jailed filesystem, SSOT search, read-only git."""
+"""In-process MCP adapters — host filesystem, SSOT search, read-only git."""
 
 from __future__ import annotations
 
@@ -56,10 +56,6 @@ async def _search_files(arguments: dict[str, Any], _supervisor: TerminalSupervis
             if name in SECRET_NAMES:
                 continue
             path = Path(dirpath) / name
-            try:
-                rel = path.relative_to(root).as_posix()
-            except ValueError:
-                continue
             matched = needle in name.lower()
             if not matched:
                 try:
@@ -70,12 +66,12 @@ async def _search_files(arguments: dict[str, Any], _supervisor: TerminalSupervis
                     continue
                 matched = needle in text.lower()
             if matched:
-                hits.append(rel)
+                hits.append(str(path))
             if len(hits) >= MAX_SEARCH_HITS:
                 break
         if len(hits) >= MAX_SEARCH_HITS:
             break
-    header = f"search_files {query!r} ({len(hits)} hits, jailed)"
+    header = f"search_files {query!r} ({len(hits)} hits)"
     body = "\n".join(hits) if hits else "(no matches)"
     return f"{header}\n{body}"
 
@@ -112,15 +108,15 @@ async def _git_log(_arguments: dict[str, Any], supervisor: TerminalSupervisor | 
 BUILTIN_TOOLS: dict[str, dict[str, dict[str, Any]]] = {
     "jailed-fs": {
         "list_dir": {
-            "description": "List a directory inside the jailed workspace.",
+            "description": "List a directory anywhere on the local filesystem.",
             "handler": _list_dir,
         },
         "read_file": {
-            "description": "Read a text file inside the jailed workspace.",
+            "description": "Read a text file anywhere on the local filesystem.",
             "handler": _read_file,
         },
         "search_files": {
-            "description": "Substring-search filenames and file bodies inside the jail.",
+            "description": "Substring-search filenames and file bodies under the given path.",
             "handler": _search_files,
         },
     },

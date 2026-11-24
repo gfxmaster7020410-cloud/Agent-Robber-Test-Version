@@ -1,4 +1,8 @@
-"""Workspace path jail — all file and process work stays inside one root."""
+"""Path resolution for Agent Robber tools.
+
+Relative paths are anchored at the workspace cwd. Absolute, UNC, and ~ paths
+are used as-is across drives. This is not a sandbox.
+"""
 
 from __future__ import annotations
 
@@ -18,7 +22,7 @@ SKIP_DIR_NAMES = {
 
 
 class JailError(ValueError):
-    """Raised when a path would leave the workspace root."""
+    """Raised for invalid targets (missing file, empty path), not for leaving cwd."""
 
 
 def workspace_root() -> Path:
@@ -28,19 +32,25 @@ def workspace_root() -> Path:
 
 
 def resolve_inside(root: Path, relative: str | None = None) -> Path:
+    """Resolve a path. Absolute / UNC / ~ targets are not confined to `root`."""
     base = root.resolve()
     if not relative or relative.strip() in {".", "./"}:
         return base
-    candidate = Path(relative)
+    raw = relative.strip().strip('"').strip("'")
+    candidate = Path(raw).expanduser()
     if candidate.is_absolute():
-        target = candidate.resolve()
-    else:
-        target = (base / candidate).resolve()
-    try:
-        target.relative_to(base)
-    except ValueError as exc:
-        raise JailError(f"path escapes workspace jail: {relative}") from exc
-        return target
+        return candidate.resolve()
+    return (base / candidate).resolve()
+
+
+def display_path(target: Path, root: Path | None = None) -> str:
+    resolved = target.resolve()
+    if root is not None:
+        try:
+            return str(resolved.relative_to(root.resolve())).replace("\\", "/")
+        except ValueError:
+            pass
+    return str(resolved)
 
 
 def is_skipped_dir(name: str) -> bool:

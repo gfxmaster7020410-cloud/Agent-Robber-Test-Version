@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Literal
 
-from robber.jail import JailError, resolve_inside, workspace_root
+from robber.jail import JailError, display_path, resolve_inside, workspace_root
 
 logger = logging.getLogger(__name__)
 
@@ -52,14 +52,7 @@ class VisionInspector:
 
     def _jailed_image(self, image_path: str | Path) -> Path:
         raw = Path(image_path)
-        if raw.is_absolute():
-            target = raw.resolve()
-            try:
-                target.relative_to(self.root)
-            except ValueError as exc:
-                raise JailError(f"screenshot escapes workspace jail: {image_path}") from exc
-        else:
-            target = resolve_inside(self.root, str(raw))
+        target = raw.resolve() if raw.is_absolute() else resolve_inside(self.root, str(raw))
         if not target.is_file():
             raise JailError(f"screenshot not found: {image_path}")
         if target.suffix.lower() not in {".png", ".jpg", ".jpeg", ".webp"}:
@@ -78,7 +71,7 @@ class VisionInspector:
             report = await self._model_analyze(target, meta)
             if report is None:
                 report = self._heuristic(target, meta)
-            return self._safety_clamp(report, str(target.relative_to(self.root)))
+            return self._safety_clamp(report, display_path(target, self.root))
         except Exception as exc:
             logger.info("vision inspector fell back (%s)", type(exc).__name__)
             return VisionReport(

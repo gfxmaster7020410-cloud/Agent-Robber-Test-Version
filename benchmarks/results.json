@@ -1,0 +1,62 @@
+{
+  "generated_at": "2026-09-04T15:03:59Z",
+  "root": "H:\\The Agent Robber UI Design Sample\\CLI Version",
+  "success_rate": 1.0,
+  "tasks_ok": 3,
+  "tasks_total": 3,
+  "tokens": 1230,
+  "cost_usd": 0.01845,
+  "peak_rss_bytes": 46272512,
+  "rss_limit_bytes": 1610612736,
+  "rss_ok": true,
+  "latency_ms": {
+    "plan_ms": 312.012,
+    "context_ms": 304.75,
+    "edit_ms": 3.7279999999999998,
+    "verify_ms": 0.601
+  },
+  "tasks": [
+    {
+      "id": "bug_fix_add",
+      "title": "Bug fix: restore add()",
+      "ok": true,
+      "tokens": 403,
+      "cost_usd": 0.006045,
+      "latency_ms": {
+        "plan_ms": 274.089,
+        "context_ms": 99.726,
+        "edit_ms": 0.282,
+        "verify_ms": 0.133
+      },
+      "detail": "verified"
+    },
+    {
+      "id": "refactor_rename",
+      "title": "Refactor: rename helper",
+      "ok": true,
+      "tokens": 406,
+      "cost_usd": 0.00609,
+      "latency_ms": {
+        "plan_ms": 5.839,
+        "context_ms": 142.914,
+        "edit_ms": 0.576,
+        "verify_ms": 0.144
+      },
+      "detail": "verified"
+    },
+    {
+      "id": "feature_multiply",
+      "title": "Feature: add multiply",
+      "ok": true,
+      "tokens": 421,
+      "cost_usd": 0.006315,
+      "latency_ms": {
+        "plan_ms": 32.084,
+        "context_ms": 62.11,
+        "edit_ms": 2.87,
+        "verify_ms": 0.324
+      },
+      "detail": "verified"
+    }
+  ]
+}

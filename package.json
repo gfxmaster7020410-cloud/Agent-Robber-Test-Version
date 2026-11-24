@@ -1,23 +1,32 @@
 {
-	"name": "agent-robber",
-	"version": "0.1.0",
-	"private": true,
-	"description": "Agent Robber — local daemon, CLI TUI, and glass GUI dashboard",
-	"scripts": {
-		"daemon": "python server.py",
-		"tui": "npm --prefix my-agent run dev",
-		"gui": "npm --prefix gui run dev",
-		"gui:build": "npm --prefix gui run build",
-		"desktop": "npm --prefix gui run tauri:dev",
-		"desktop:build": "npm --prefix gui run tauri:build",
-		"build": "npm --prefix my-agent run build",
-		"typecheck": "npm --prefix my-agent run typecheck",
-		"smoke": "npm --prefix my-agent run smoke",
-		"verify": "npm --prefix my-agent run verify",
-		"precheck": "npm run typecheck",
-		"check": "npm run smoke"
-	},
-	"engines": {
-		"node": ">=22"
-	}
+  "name": "agent-robber",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Agent Robber -- local daemon, CLI TUI, and glass GUI dashboard",
+  "scripts": {
+    "daemon": "python server.py",
+    "tui": "python -m robber.tui",
+    "tui:ink": "npm --prefix my-agent run dev",
+    "tui:ui": "npm --prefix ui run dev",
+    "tui:ui:mock": "npm --prefix ui run dev -- --mock",
+    "test:ui": "npm --prefix ui test",
+    "stack": "python -m robber.launcher",
+    "stack:headless": "python -m robber.launcher --headless",
+    "package": "python scripts/build/package_agent.py",
+    "e2e": "python -m tests.e2e.test_full_system",
+    "bench": "python -m benchmarks.run_benchmarks",
+    "gui": "npm --prefix gui run dev",
+    "gui:build": "npm --prefix gui run build",
+    "desktop": "npm --prefix gui run tauri:dev",
+    "desktop:build": "npm --prefix gui run tauri:build",
+    "build": "npm --prefix my-agent run build",
+    "typecheck": "npm --prefix my-agent run typecheck && npm --prefix ui run typecheck",
+    "smoke": "npm --prefix my-agent run smoke",
+    "verify": "npm --prefix my-agent run verify",
+    "precheck": "npm run typecheck",
+    "check": "npm run smoke"
+  },
+  "engines": {
+    "node": ">=22"
+  }
 }

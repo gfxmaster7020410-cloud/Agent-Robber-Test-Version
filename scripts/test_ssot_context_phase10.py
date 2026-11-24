@@ -1,4 +1,4 @@
-"""Phase 10 — adjustable SSOT context window (default 1 trillion)."""
+"""Phase 10 — adjustable SSOT context window (default 200k)."""
 
 from __future__ import annotations
 
@@ -30,14 +30,16 @@ async def main() -> None:
         parse_window,
     )
 
-    if parse_window("1t") != DEFAULT_CONTEXT_WINDOW:
-        _fail(f"1t should be {DEFAULT_CONTEXT_WINDOW}, got {parse_window('1t')}")
-    if parse_window("1e12") != DEFAULT_CONTEXT_WINDOW:
-        _fail("1e12 should match default")
+    if parse_window("1t") != 1_000_000_000_000:
+        _fail(f"1t should be 1T unbounded, got {parse_window('1t')}")
+    if parse_window("1e12") != 1_000_000_000_000:
+        _fail("1e12 should be 1T")
     if parse_window(2_000_000_000_000) != 2_000_000_000_000:
-        _fail("int 2T rejected")
-    if format_window(DEFAULT_CONTEXT_WINDOW) != "1T":
+        _fail("int 2T should stay 2T")
+    if format_window(DEFAULT_CONTEXT_WINDOW) != "200K":
         _fail(f"format default, got {format_window(DEFAULT_CONTEXT_WINDOW)}")
+    if format_window(1_000_000_000_000) != "1T":
+        _fail("format 1T")
     try:
         parse_window(0)
         _fail("zero window should be rejected")
@@ -70,20 +72,21 @@ async def main() -> None:
         ssot_mod._INDEX = None
         saved = save_context_window(DEFAULT_CONTEXT_WINDOW)
         if saved != DEFAULT_CONTEXT_WINDOW:
-            _fail("prefs did not store default 1T")
+            _fail("prefs did not store default 200k")
         if load_context_window() != DEFAULT_CONTEXT_WINDOW:
             _fail("prefs round-trip failed")
         if save_context_window("2m") != 2_000_000:
-            _fail("prefs 2m failed")
+            _fail("prefs 2m should store 2M unbounded")
         _ok("prefs persist")
 
         db = Database(work / ".robber" / "accounts.db")
         await db.connect()
         if await db.get_ssot_window() is not None:
             _fail("fresh db should have no ssot_context row")
-        await db.set_ssot_window(DEFAULT_CONTEXT_WINDOW)
-        if await db.get_ssot_window() != DEFAULT_CONTEXT_WINDOW:
+        await db.set_ssot_window(1_000_000_000_000)
+        if await db.get_ssot_window() != 1_000_000_000_000:
             _fail("sqlite did not store 1T")
+        await db.set_ssot_window(DEFAULT_CONTEXT_WINDOW)
         await db.set_ssot_packed(12, 3)
         row = await db.get_ssot_context_row()
         if row is None or int(row["packed_tokens"]) != 12 or int(row["hit_count"]) != 3:
@@ -109,14 +112,14 @@ async def main() -> None:
 
         wide = pack_ssot_context("seed function", window=DEFAULT_CONTEXT_WINDOW)
         if wide.configured != DEFAULT_CONTEXT_WINDOW:
-            _fail("wide window not 1T")
+            _fail("wide window not 200k")
         if wide.packed > wide.configured:
-            _fail("packed exceeded 1T")
+            _fail("packed exceeded 200k")
         if "@seed.py#L1-L2" not in pack_ssot_context(
             "work on @seed.py#L1-L2", window=10_000
         ).text:
             _fail("pinned anchor missing from packed context")
-        _ok("pack 1T + pin")
+        _ok("pack 200k + pin")
 
         ssot_mod._INDEX = None
 

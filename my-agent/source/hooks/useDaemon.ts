@@ -113,6 +113,22 @@ function asNumber(value: unknown): number | null {
 	return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
+function parseShorthand(raw: string): number {
+	const text = raw.trim().toUpperCase().replace(/,/g, '').replace(/_/g, '').replace(/\s/g, '');
+	const match = text.match(/^(\d+(?:\.\d+)?(?:E[+-]?\d+)?)([KMBTG])?$/);
+	let parsed = match ? Number(match[1]) : Number(text);
+	if (match?.[2] === 'K') {
+		parsed *= 1_000;
+	} else if (match?.[2] === 'M') {
+		parsed *= 1_000_000;
+	} else if (match?.[2] === 'B' || match?.[2] === 'G') {
+		parsed *= 1_000_000_000;
+	} else if (match?.[2] === 'T') {
+		parsed *= 1_000_000_000_000;
+	}
+	return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : 200_000;
+}
+
 function ssotFromFrame(frame: Record<string, unknown>): {
 	ssotFiles: number;
 	ssotChunks: number;
@@ -124,13 +140,13 @@ function ssotFromFrame(frame: Record<string, unknown>): {
 	contextHits: number;
 } {
 	const ssot = asRecord(frame['ssot']);
-	const windowRaw = frame['context_window'] ?? ssot?.['window'] ?? 1_000_000_000_000;
+	const windowRaw = frame['context_window'] ?? ssot?.['window'] ?? 200_000;
 	const windowValue =
 		typeof windowRaw === 'number' && Number.isFinite(windowRaw) && windowRaw > 0
 			? Math.trunc(windowRaw)
-			: typeof windowRaw === 'string' && Number(windowRaw) > 0
-				? Math.trunc(Number(windowRaw))
-				: 1_000_000_000_000;
+			: typeof windowRaw === 'string'
+				? parseShorthand(windowRaw)
+				: 200_000;
 	if (!ssot) {
 		return {
 			ssotFiles: 0,

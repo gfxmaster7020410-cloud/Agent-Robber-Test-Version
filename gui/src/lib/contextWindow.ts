@@ -1,48 +1,54 @@
-export const DEFAULT_CONTEXT_WINDOW = 1_000_000_000_000;
+export const DEFAULT_CONTEXT_WINDOW = 200_000;
 
 export const WINDOW_PRESETS = [
+	{id: '128k', label: '128K', value: 128_000},
+	{id: '200k', label: '200K', value: DEFAULT_CONTEXT_WINDOW},
 	{id: '1m', label: '1M', value: 1_000_000},
 	{id: '1b', label: '1B', value: 1_000_000_000},
-	{id: '1t', label: '1T', value: DEFAULT_CONTEXT_WINDOW},
+	{id: '1t', label: '1T', value: 1_000_000_000_000},
 ] as const;
 
+const MULTIPLIER: Record<string, number> = {
+	k: 1_000,
+	m: 1_000_000,
+	b: 1_000_000_000,
+	g: 1_000_000_000,
+	t: 1_000_000_000_000,
+};
+
 export function parseWindowInput(raw: string): number | null {
-	const text = raw.trim().toLowerCase().replace(/,/g, '').replace(/_/g, '').replace(/\s/g, '');
+	const text = raw.trim().toUpperCase().replace(/,/g, '').replace(/_/g, '').replace(/\s/g, '');
 	if (!text) {
 		return null;
 	}
 
-	let multiplier = 1;
-	let amount = text;
-	const last = text[text.length - 1];
-	if (last && 'kmbtg'.includes(last) && text.length > 1) {
-		const prev = text[text.length - 2];
-		if (prev && (prev === '.' || (prev >= '0' && prev <= '9'))) {
-			multiplier =
-				last === 'k'
-					? 1_000
-					: last === 'm'
-						? 1_000_000
-						: last === 'b' || last === 'g'
-							? 1_000_000_000
-							: 1_000_000_000_000;
-			amount = text.slice(0, -1);
+	const match = text.match(/^(\d+(?:\.\d+)?(?:E[+-]?\d+)?)([KMBTG])?$/);
+	let parsed: number;
+	if (match) {
+		parsed = Number(match[1]);
+		const unit = match[2]?.toLowerCase();
+		if (unit && unit in MULTIPLIER) {
+			parsed *= MULTIPLIER[unit];
 		}
+	} else {
+		parsed = Number(text);
 	}
 
-	const parsed = Number(amount);
 	if (!Number.isFinite(parsed) || parsed <= 0) {
 		return null;
 	}
 
-	const value = Math.trunc(parsed * multiplier);
-	return value > 0 ? value : null;
+	return Math.trunc(parsed);
 }
 
 export function formatWindow(value: number): string {
 	const n = Math.trunc(value);
-	if (!Number.isFinite(n) || n <= 0) {
+	if (!Number.isFinite(n) || n < 0) {
 		return '—';
+	}
+
+	if (n === 0) {
+		return '0';
 	}
 
 	if (n >= 1_000_000_000_000 && n % 1_000_000_000_000 === 0) {

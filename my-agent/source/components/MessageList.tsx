@@ -89,6 +89,35 @@ function sliceToFit(
 	};
 }
 
+function MarkdownProse({value}: {value: string}) {
+	const lines = value.split('\n');
+	return (
+		<Box flexDirection="column">
+			{lines.map((line, index) => {
+				if (/^####\s+/.test(line)) {
+					return (
+						<Text key={index} bold color="cyan">
+							{line.replace(/^####\s+/, '')}
+						</Text>
+					);
+				}
+				if (/^#{1,3}\s+/.test(line)) {
+					return (
+						<Text key={index} bold color="yellow">
+							{line.replace(/^#{1,3}\s+/, '')}
+						</Text>
+					);
+				}
+				return (
+					<Text key={index} color="white">
+						{line.length > 0 ? line : ' '}
+					</Text>
+				);
+			})}
+		</Box>
+	);
+}
+
 function MessageView({message, width}: {message: ChatMessage; width: number}) {
 	switch (message.role) {
 		case 'user':
@@ -102,17 +131,17 @@ function MessageView({message, width}: {message: ChatMessage; width: number}) {
 		case 'assistant': {
 			const segments = parseContentSegments(message.content);
 			return (
-				<Box flexDirection="column">
+				<Box flexDirection="column" width={width}>
 					{segments.map((segment, index) =>
 						segment.type === 'code' ? (
 							<CodeBlock
 								key={index}
 								code={segment.value}
 								language={segment.language}
-								width={width - 2}
+								width={width}
 							/>
 						) : (
-							<Text key={index}>{segment.value}</Text>
+							<MarkdownProse key={index} value={segment.value} />
 						),
 					)}
 				</Box>

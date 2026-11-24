@@ -3,11 +3,52 @@
 from __future__ import annotations
 
 import re
+import subprocess
 from pathlib import Path
+from typing import Any
 
-from robber.jail import JailError, resolve_inside
+from robber.jail import JailError, display_path, resolve_inside
 
 BLOCKED_NAMES = {".env", ".env.local", "keys.vault", "credentials.json"}
+BINARY_SUFFIXES = {
+    ".7z",
+    ".bin",
+    ".bmp",
+    ".class",
+    ".db",
+    ".dll",
+    ".eot",
+    ".exe",
+    ".gif",
+    ".gz",
+    ".ico",
+    ".jpeg",
+    ".jpg",
+    ".mp3",
+    ".mp4",
+    ".o",
+    ".obj",
+    ".ogg",
+    ".otf",
+    ".pdb",
+    ".pdf",
+    ".png",
+    ".pyc",
+    ".pyo",
+    ".rar",
+    ".so",
+    ".sqlite",
+    ".sqlite3",
+    ".ttf",
+    ".wasm",
+    ".wav",
+    ".webm",
+    ".webp",
+    ".whl",
+    ".woff",
+    ".woff2",
+    ".zip",
+}
 FILE_HEADER = re.compile(r"^\+\+\+ [ab]/(.+)$", re.MULTILINE)
 DIFF_FENCE = re.compile(r"```diff\s*\n(.*?)```", re.DOTALL | re.IGNORECASE)
 HUNK_HEADER = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
@@ -37,12 +78,12 @@ def apply_unified_diff(root: Path, diff: str, *, relative: str | None = None) ->
     target = resolve_inside(root, path)
     if not target.is_file():
         raise JailError(f"not a file: {path}")
-    original = target.read_text(encoding="utf-8")
+    original = target.read_text(encoding="utf-8", errors="replace")
     updated = _apply_hunks(original, diff)
     if target.suffix.lower() == ".py":
         compile(updated, str(target), "exec")
     target.write_text(updated, encoding="utf-8")
-    return f"patched {target.relative_to(root.resolve())}"
+    return f"patched {display_path(target, root)}"
 
 
 def _apply_hunks(original: str, diff: str) -> str:
@@ -77,3 +118,77 @@ def _apply_hunks(original: str, diff: str) -> str:
     if not applied:
         raise JailError("diff contained no hunks")
     return "".join(lines)
+
+
+def _git(root: Path, *args: str, timeout: float = 8.0) -> tuple[int, str]:
+    try:
+        proc = subprocess.run(
+            ["git", *args],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return 1, ""
+    out = (proc.stdout or "").strip() or (proc.stderr or "").strip()
+    return int(proc.returncode or 0), out
+
+
+def create_workspace_snapshot(root: Path) -> dict[str, Any]:
+    """Capture a pre-batch git stash object plus untracked file bodies."""
+    snap: dict[str, Any] = {"oid": "", "untracked": {}}
+    code, oid = _git(root, "stash", "create")
+    if code == 0 and oid and re.fullmatch(r"[0-9a-f]{7,40}", oid.split()[0] if oid else ""):
+        snap["oid"] = oid.split()[0]
+    _code, listing = _git(root, "ls-files", "--others", "--exclude-standard")
+    untracked: dict[str, str] = {}
+    for rel in listing.splitlines():
+        rel = rel.strip().replace("\\", "/")
+        if not rel or rel.startswith(".robber/") or rel.startswith(".git/"):
+            continue
+        if Path(rel).name in BLOCKED_NAMES:
+            continue
+        path = root / rel
+        if not path.is_file():
+            continue
+        if path.suffix.lower() in BINARY_SUFFIXES:
+            continue
+        try:
+            if path.stat().st_size > 2_000_000:
+                continue
+            data = path.read_bytes()
+        except OSError:
+            continue
+        if b"\x00" in data[:4096]:
+            continue
+        try:
+            untracked[rel] = data.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+    snap["untracked"] = untracked
+    return snap
+
+
+def restore_workspace_snapshot(root: Path, snap: dict[str, Any] | None) -> bool:
+    """Restore tracked files from the stash oid and rewrite saved untracked files."""
+    if not snap:
+        return False
+    restored = False
+    oid = str(snap.get("oid") or "").strip()
+    if oid:
+        code, _out = _git(root, "checkout", oid, "--", ".")
+        restored = code == 0
+    untracked = snap.get("untracked") if isinstance(snap.get("untracked"), dict) else {}
+    for rel, content in untracked.items():
+        try:
+            target = resolve_inside(root, str(rel))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(str(content), encoding="utf-8")
+            restored = True
+        except (JailError, OSError):
+            continue
+    return restored

@@ -1,17 +1,41 @@
-node_modules/
-dist/
-
-__pycache__/
-*.py[cod]
-.venv/
-venv/
-
+# --- Secrets (never commit) ---
 .env
-.env.local
-
+.env.*
+!.env.example
 .robber/
+.agent_robber/
 *.robberctx
 
+# --- Local runtime data ---
+data/browser_sessions/
+data/vault_snapshots/
+data/snapshots/
+*.db
+*.db-journal
+session-ses_*.md
+%USERPROFILE%/
+scratch/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# --- Node / build output ---
+node_modules/
+dist/
+*.tsbuildinfo
+
+# --- Tauri / Rust ---
 gui/src-tauri/target/
 gui/src-tauri/gen/
+indexer/target/
+indexer/.tools/
 
+# --- Gateway binaries ---
+gateway/gateway
+gateway/gateway.exe
+gateway/*.exe

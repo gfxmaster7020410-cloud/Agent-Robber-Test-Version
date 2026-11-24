@@ -1,4 +1,4 @@
-"""Async SQLite store for account profiles, session cookies, and execution logs."""
+"""Async SQLite store for accounts, cookies, logs, models, combos, and chat history."""
 
 from __future__ import annotations
 
@@ -50,8 +50,8 @@ CREATE INDEX IF NOT EXISTS idx_execution_logs_profile
 
 CREATE TABLE IF NOT EXISTS ssot_context (
     id INTEGER PRIMARY KEY CHECK (id = 1),
-    window_tokens INTEGER NOT NULL,
-    packed_tokens INTEGER NOT NULL DEFAULT 0,
+    window_tokens BIGINT NOT NULL,
+    packed_tokens BIGINT NOT NULL DEFAULT 0,
     hit_count INTEGER NOT NULL DEFAULT 0,
     updated_at TEXT NOT NULL
 );
@@ -99,6 +99,18 @@ CREATE TABLE IF NOT EXISTS combo_models (
     is_active INTEGER DEFAULT 1,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS conversation_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    content TEXT NOT NULL DEFAULT '',
+    tokens INTEGER NOT NULL DEFAULT 0,
+    timestamp TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_conversation_history_session
+    ON conversation_history (session_id, timestamp, id);
 """
 
 PROTOCOL_TYPES = ("OPENAI_COMPATIBLE", "ANTHROPIC_COMPATIBLE", "NATIVE")
@@ -170,6 +182,7 @@ class Database:
         await db.executescript(SCHEMA_SQL)
         await db.commit()
         await self._migrate_orchestration()
+        await self._migrate_ssot_bigint()
 
     async def close(self) -> None:
         if self._db is None:
@@ -347,6 +360,40 @@ class Database:
                     "cost_per_1m": float(row.get("cost_per_1m") or 0.0),
                 }
             )
+
+    async def _migrate_ssot_bigint(self) -> None:
+        """Store SSOT token budgets as 64-bit integers (SQLite BIGINT / INTEGER affinity)."""
+        db = await self._require()
+        info = await self.fetchall("PRAGMA table_info(ssot_context)")
+        types = {
+            str(item.get("name") or ""): str(item.get("type") or "").upper()
+            for item in info
+        }
+        if not types:
+            return
+        if types.get("window_tokens") == "BIGINT" and types.get("packed_tokens") == "BIGINT":
+            return
+        try:
+            await db.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS ssot_context_bigint (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    window_tokens BIGINT NOT NULL,
+                    packed_tokens BIGINT NOT NULL DEFAULT 0,
+                    hit_count INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL
+                );
+                INSERT OR REPLACE INTO ssot_context_bigint
+                    (id, window_tokens, packed_tokens, hit_count, updated_at)
+                SELECT id, window_tokens, packed_tokens, hit_count, updated_at
+                FROM ssot_context;
+                DROP TABLE ssot_context;
+                ALTER TABLE ssot_context_bigint RENAME TO ssot_context;
+                """
+            )
+            await db.commit()
+        except Exception:
+            pass
 
     async def add_model(self, data: dict[str, Any]) -> str:
         from robber.engine.presets import PROTOCOL_TYPES, get_preset
@@ -614,3 +661,65 @@ class Database:
             """,
             (window, packed, hits, stamp),
         )
+
+    async def add_conversation_message(
+        self,
+        session_id: str,
+        role: str,
+        content: str,
+        *,
+        tokens: int | None = None,
+        timestamp: str | None = None,
+    ) -> int:
+        sid = (session_id or "current_session").strip() or "current_session"
+        text = content or ""
+        stamp = timestamp or datetime.now(timezone.utc).isoformat()
+        counted = tokens if tokens is not None else max(0, (len(text) + 3) // 4)
+        db = await self._require()
+        async with self._lock:
+            cursor = await db.execute(
+                """
+                INSERT INTO conversation_history (session_id, role, content, tokens, timestamp)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (sid, (role or "system").strip() or "system", text, counted, stamp),
+            )
+            await db.commit()
+            return int(cursor.lastrowid or 0)
+
+    async def get_conversation_history(
+        self,
+        session_id: str,
+        *,
+        limit: int = 200,
+    ) -> list[dict[str, Any]]:
+        sid = (session_id or "current_session").strip() or "current_session"
+        cap = max(1, min(int(limit or 200), 1000))
+        rows = await self.fetchall(
+            """
+            SELECT id, session_id, role, content, tokens, timestamp
+            FROM conversation_history
+            WHERE session_id = ?
+            ORDER BY timestamp ASC, id ASC
+            LIMIT ?
+            """,
+            (sid, cap),
+        )
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            out.append(
+                {
+                    "id": int(row.get("id") or 0),
+                    "session_id": str(row.get("session_id") or sid),
+                    "role": str(row.get("role") or "system"),
+                    "content": str(row.get("content") or ""),
+                    "tokens": int(row.get("tokens") or 0),
+                    "timestamp": str(row.get("timestamp") or ""),
+                }
+            )
+        return out
+
+    async def clear_conversation_history(self, session_id: str) -> None:
+        sid = (session_id or "current_session").strip() or "current_session"
+        await self.execute("DELETE FROM conversation_history WHERE session_id = ?", (sid,))
+

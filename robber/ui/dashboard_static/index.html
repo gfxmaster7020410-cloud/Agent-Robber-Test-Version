@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Robber Dashboard</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { font-family: 'JetBrains Mono', 'Fira Code', monospace; background: #0a0e17; color: #e2e8f0; }
+  .gauge-bar { transition: width 0.6s ease; }
+  .pulse { animation: pulse 2s infinite; }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+  .status-ok { color: #34d399; }
+  .status-warn { color: #fbbf24; }
+  .status-err { color: #f87171; }
+  .card { background: #111827; border: 1px solid #1e293b; border-radius: 0.5rem; }
+  .log-entry { border-bottom: 1px solid #1e293b; padding: 0.25rem 0; font-size: 0.75rem; }
+  table { border-collapse: collapse; }
+  th, td { padding: 0.375rem 0.75rem; text-align: left; border-bottom: 1px solid #1e293b; }
+  th { color: #94a3b8; font-weight: 600; font-size: 0.7rem; text-transform: uppercase; }
+  td { font-size: 0.8rem; }
+  .ws-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .ws-connected { background: #34d399; }
+  .ws-disconnected { background: #f87171; }
+  .q-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 100; display: none; align-items: center; justify-content: center; }
+  .q-overlay.active { display: flex; }
+  .q-modal { background: #111827; border: 1px solid #06b6d4; border-radius: 0.75rem; padding: 1.5rem; max-width: 32rem; width: 90%; box-shadow: 0 0 30px rgba(6,182,212,0.15); }
+  .q-option { display: block; width: 100%; text-align: left; padding: 0.625rem 1rem; margin: 0.375rem 0; background: #1e293b; border: 1px solid #334155; border-radius: 0.5rem; color: #e2e8f0; font-family: inherit; font-size: 0.85rem; cursor: pointer; transition: all 0.15s; }
+  .q-option:hover { background: #334155; border-color: #06b6d4; color: #22d3ee; }
+  .q-option.selected { background: #0e7490; border-color: #06b6d4; color: #fff; }
+  .q-input { width: 100%; padding: 0.625rem 1rem; background: #0f172a; border: 1px solid #334155; border-radius: 0.5rem; color: #e2e8f0; font-family: inherit; font-size: 0.85rem; outline: none; }
+  .q-input:focus { border-color: #06b6d4; }
+  .q-submit { padding: 0.5rem 1.5rem; background: #06b6d4; color: #0a0e17; border: none; border-radius: 0.5rem; font-family: inherit; font-weight: 600; cursor: pointer; font-size: 0.85rem; }
+  .q-submit:hover { background: #22d3ee; }
+  .q-submit:disabled { opacity: 0.4; cursor: not-allowed; }
+  .q-timer { font-size: 0.7rem; color: #64748b; }
+</style>
+</head>
+<body class="min-h-screen p-4">
+<header class="flex items-center justify-between mb-4">
+  <div class="flex items-center gap-3">
+    <h1 class="text-xl font-bold text-cyan-400">AGENT ROBBER</h1>
+    <span class="text-xs text-slate-500">Dashboard v1.0</span>
+  </div>
+  <div class="flex items-center gap-3 text-xs">
+    <span id="ws-status" class="flex items-center gap-1"><span class="ws-dot ws-disconnected"></span> Disconnected</span>
+    <span id="clock" class="text-slate-500"></span>
+  </div>
+</header>
+
+<div class="grid grid-cols-12 gap-3">
+  <!-- RAM Gauge -->
+  <div class="card col-span-4 p-3">
+    <div class="flex justify-between items-center mb-2">
+      <span class="text-xs text-slate-400 font-semibold uppercase">RAM Usage</span>
+      <span id="ram-text" class="text-sm font-mono">0 / 1500 MB</span>
+    </div>
+    <div class="w-full bg-slate-800 rounded-full h-4 mb-1">
+      <div id="ram-bar" class="gauge-bar bg-cyan-500 h-4 rounded-full" style="width: 0%"></div>
+    </div>
+    <div class="flex justify-between text-xs text-slate-500">
+      <span id="ram-pct">0%</span>
+      <span id="ram-limit">Limit: 1500 MB</span>
+    </div>
+  </div>
+
+  <!-- Budget Gauge -->
+  <div class="card col-span-4 p-3">
+    <div class="flex justify-between items-center mb-2">
+      <span class="text-xs text-slate-400 font-semibold uppercase">Daily Budget</span>
+      <span id="budget-text" class="text-sm font-mono">$0.00 / $2.00</span>
+    </div>
+    <div class="w-full bg-slate-800 rounded-full h-4 mb-1">
+      <div id="budget-bar" class="gauge-bar bg-emerald-500 h-4 rounded-full" style="width: 0%"></div>
+    </div>
+    <div class="flex justify-between text-xs text-slate-500">
+      <span id="budget-pct">0%</span>
+      <span id="budget-status" class="status-ok">OK</span>
+    </div>
+  </div>
+
+  <!-- Monthly Budget -->
+  <div class="card col-span-4 p-3">
+    <div class="flex justify-between items-center mb-2">
+      <span class="text-xs text-slate-400 font-semibold uppercase">Monthly Budget</span>
+      <span id="monthly-text" class="text-sm font-mono">$0.00 / $30.00</span>
+    </div>
+    <div class="w-full bg-slate-800 rounded-full h-4 mb-1">
+      <div id="monthly-bar" class="gauge-bar bg-purple-500 h-4 rounded-full" style="width: 0%"></div>
+    </div>
+    <div class="flex justify-between text-xs text-slate-500">
+      <span id="monthly-pct">0%</span>
+      <span id="monthly-status" class="status-ok">OK</span>
+    </div>
+  </div>
+
+  <!-- Token Summary -->
+  <div class="card col-span-3 p-3">
+    <span class="text-xs text-slate-400 font-semibold uppercase block mb-2">Today Tokens</span>
+    <div class="text-lg font-mono text-cyan-300" id="token-input">0 in</div>
+    <div class="text-lg font-mono text-emerald-300" id="token-output">0 out</div>
+    <div class="text-xs text-slate-500 mt-1" id="token-cost">$0.00 estimated</div>
+  </div>
+
+  <!-- Task Queue -->
+  <div class="card col-span-3 p-3">
+    <span class="text-xs text-slate-400 font-semibold uppercase block mb-2">Tasks</span>
+    <div class="grid grid-cols-2 gap-1 text-sm">
+      <div class="text-slate-500">Queued</div><div class="text-right font-mono" id="t-queued">0</div>
+      <div class="text-slate-500">Running</div><div class="text-right font-mono text-cyan-400" id="t-running">0</div>
+      <div class="text-slate-500">Done</div><div class="text-right font-mono text-emerald-400" id="t-done">0</div>
+      <div class="text-slate-500">Failed</div><div class="text-right font-mono text-red-400" id="t-failed">0</div>
+    </div>
+  </div>
+
+  <!-- Active Agents -->
+  <div class="card col-span-3 p-3">
+    <span class="text-xs text-slate-400 font-semibold uppercase block mb-2">Agents</span>
+    <div id="agents-list" class="text-xs space-y-1 max-h-32 overflow-y-auto">
+      <div class="text-slate-600">No active agents</div>
+    </div>
+  </div>
+
+  <!-- Provider Status -->
+  <div class="card col-span-3 p-3">
+    <span class="text-xs text-slate-400 font-semibold uppercase block mb-2">Providers</span>
+    <div id="providers-list" class="text-xs space-y-1 max-h-32 overflow-y-auto">
+      <div class="text-slate-600">Loading...</div>
+    </div>
+  </div>
+
+  <!-- Model Routes -->
+  <div class="card col-span-5 p-3">
+    <span class="text-xs text-slate-400 font-semibold uppercase block mb-2">Persona Routes</span>
+    <table class="w-full">
+      <thead><tr><th>Persona</th><th>Tier</th><th>Task Type</th><th>Budget</th></tr></thead>
+      <tbody id="routes-table"></tbody>
+    </table>
+  </div>
+
+  <!-- Token by Provider -->
+  <div class="card col-span-7 p-3">
+    <span class="text-xs text-slate-400 font-semibold uppercase block mb-2">Token Usage by Provider (24h)</span>
+    <table class="w-full">
+      <thead><tr><th>Provider</th><th>Input</th><th>Output</th><th>Cost</th><th>Requests</th></tr></thead>
+      <tbody id="provider-usage-table"></tbody>
+    </table>
+  </div>
+
+  <!-- Live Log -->
+  <div class="card col-span-12 p-3">
+    <div class="flex justify-between items-center mb-2">
+      <span class="text-xs text-slate-400 font-semibold uppercase">Dispatch Log</span>
+      <span class="text-xs text-slate-600" id="log-count">0 entries</span>
+    </div>
+    <div id="dispatch-log" class="max-h-48 overflow-y-auto font-mono text-xs space-y-0.5">
+      <div class="text-slate-600">Waiting for dispatch events...</div>
+    </div>
+  </div>
+</div>
+
+<footer class="mt-4 text-center text-xs text-slate-600">
+  Agent Robber &mdash; Self-Codebase Protection Active &mdash; RAM Limit: 1.5 GB
+</footer>
+
+<!-- Clarification Question Modal -->
+<div id="q-overlay" class="q-overlay">
+  <div class="q-modal">
+    <div class="flex justify-between items-center mb-3">
+      <span class="text-xs text-cyan-400 font-semibold uppercase">Clarification Required</span>
+      <span id="q-timer" class="q-timer"></span>
+    </div>
+    <p id="q-text" class="text-sm text-slate-200 mb-4"></p>
+    <div id="q-options" class="mb-3"></div>
+    <div id="q-custom-wrap" class="mb-3" style="display:none">
+      <input id="q-custom" class="q-input" type="text" placeholder="Type your answer..." autocomplete="off" />
+    </div>
+    <div class="flex justify-between items-center">
+      <span id="q-source" class="text-xs text-slate-600"></span>
+      <button id="q-submit" class="q-submit" disabled>Submit</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let ws = null;
+let reconnectTimer = null;
+
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(proto + '//' + location.host + '/ws/dashboard');
+  ws.onopen = () => {
+    document.getElementById('ws-status').innerHTML = '<span class="ws-dot ws-connected"></span> Connected';
+    if (reconnectTimer) { clearInterval(reconnectTimer); reconnectTimer = null; }
+  };
+  ws.onclose = () => {
+    document.getElementById('ws-status').innerHTML = '<span class="ws-dot ws-disconnected"></span> Disconnected';
+    if (!reconnectTimer) reconnectTimer = setInterval(connect, 3000);
+  };
+  ws.onerror = () => ws.close();
+  ws.onmessage = (e) => {
+    try { updateDashboard(JSON.parse(e.data)); } catch(err) { console.error(err); }
+  };
+}
+
+function fmt(n) { return n.toLocaleString(); }
+function fmtCost(n) { return '$' + n.toFixed(4); }
+function fmtTok(n) { return n >= 1000000 ? (n/1000000).toFixed(1)+'M' : n >= 1000 ? (n/1000).toFixed(1)+'K' : String(n); }
+function pctClass(p) { return p >= 100 ? 'status-err' : p >= 90 ? 'status-warn' : 'status-ok'; }
+
+function updateDashboard(d) {
+  // RAM
+  const ramMB = d.ram.combined_mb || 0;
+  const ramLim = d.ram.limit_mb || 1500;
+  const ramPct = d.ram.pct || 0;
+  document.getElementById('ram-text').textContent = fmt(Math.round(ramMB)) + ' / ' + fmt(Math.round(ramLim)) + ' MB';
+  document.getElementById('ram-bar').style.width = Math.min(ramPct, 100) + '%';
+  document.getElementById('ram-bar').className = 'gauge-bar h-4 rounded-full ' + (ramPct > 90 ? 'bg-red-500' : ramPct > 75 ? 'bg-yellow-500' : 'bg-cyan-500');
+  document.getElementById('ram-pct').textContent = ramPct.toFixed(1) + '%';
+
+  // Budget
+  const b = d.budget || {};
+  const dPct = b.daily_pct || 0;
+  const mPct = b.monthly_pct || 0;
+  document.getElementById('budget-text').textContent = fmtCost(b.daily_used||0) + ' / ' + fmtCost(b.daily_limit||2);
+  document.getElementById('budget-bar').style.width = Math.min(dPct, 100) + '%';
+  document.getElementById('budget-bar').className = 'gauge-bar h-4 rounded-full ' + (dPct > 100 ? 'bg-red-500' : dPct > 90 ? 'bg-yellow-500' : 'bg-emerald-500');
+  document.getElementById('budget-pct').textContent = dPct.toFixed(1) + '%';
+  const bs = document.getElementById('budget-status');
+  bs.textContent = b.should_fallback ? 'EXCEEDED' : b.warning ? 'WARNING' : 'OK';
+  bs.className = b.should_fallback ? 'status-err' : b.warning ? 'status-warn' : 'status-ok';
+
+  document.getElementById('monthly-text').textContent = fmtCost(b.monthly_used||0) + ' / ' + fmtCost(b.monthly_limit||30);
+  document.getElementById('monthly-bar').style.width = Math.min(mPct, 100) + '%';
+  document.getElementById('monthly-bar').className = 'gauge-bar h-4 rounded-full ' + (mPct > 100 ? 'bg-red-500' : mPct > 90 ? 'bg-yellow-500' : 'bg-purple-500');
+  document.getElementById('monthly-pct').textContent = mPct.toFixed(1) + '%';
+  const ms = document.getElementById('monthly-status');
+  ms.textContent = mPct >= 100 ? 'EXCEEDED' : mPct >= 90 ? 'WARNING' : 'OK';
+  ms.className = mPct >= 100 ? 'status-err' : mPct >= 90 ? 'status-warn' : 'status-ok';
+
+  // Tokens
+  const tu = d.token_usage || {};
+  const day = tu.daily || {};
+  document.getElementById('token-input').textContent = fmtTok(day.input_tokens||0) + ' in';
+  document.getElementById('token-output').textContent = fmtTok(day.output_tokens||0) + ' out';
+  document.getElementById('token-cost').textContent = fmtCost(day.cost_usd||0) + ' estimated';
+
+  // Tasks
+  const t = d.tasks || {};
+  document.getElementById('t-queued').textContent = t.queued || 0;
+  document.getElementById('t-running').textContent = t.running || 0;
+  document.getElementById('t-done').textContent = t.completed || 0;
+  document.getElementById('t-failed').textContent = t.failed || 0;
+
+  // Agents
+  const agents = d.agents || [];
+  const al = document.getElementById('agents-list');
+  if (agents.length === 0) {
+    al.innerHTML = '<div class="text-slate-600">No active agents</div>';
+  } else {
+    al.innerHTML = agents.map(a =>
+      '<div class="flex justify-between"><span class="text-cyan-400">' + (a.worker_id||'?') + '</span><span class="text-slate-500">' + (a.phase||'idle') + '</span></div>'
+    ).join('');
+  }
+
+  // Provider usage table
+  const byProv = (tu.by_provider || {});
+  const put = document.getElementById('provider-usage-table');
+  const provKeys = Object.keys(byProv);
+  if (provKeys.length === 0) {
+    put.innerHTML = '<tr><td colspan="5" class="text-slate-600">No usage recorded</td></tr>';
+  } else {
+    put.innerHTML = provKeys.map(k => {
+      const p = byProv[k];
+      return '<tr><td class="text-cyan-400">' + k + '</td><td>' + fmtTok(p.input||0) + '</td><td>' + fmtTok(p.output||0) + '</td><td>' + fmtCost(p.cost||0) + '</td><td>' + (p.count||0) + '</td></tr>';
+    }).join('');
+  }
+
+  // Dispatch log
+  const logs = d.dispatch_log || [];
+  const lg = document.getElementById('dispatch-log');
+  document.getElementById('log-count').textContent = logs.length + ' entries';
+  if (logs.length > 0) {
+    lg.innerHTML = logs.reverse().map(e =>
+      '<div class="log-entry"><span class="text-slate-600">' + new Date((e.timestamp||0)*1000).toLocaleTimeString() + '</span> ' +
+      '<span class="text-cyan-400">' + (e.worker_role||'?') + '</span> ' +
+      '<span class="text-slate-400">' + (e.provider||'?') + '/' + (e.model||'?') + '</span> ' +
+      (e.local_fallback ? '<span class="text-yellow-400">LOCAL</span> ' : '') +
+      '<span class="text-emerald-400">' + fmtCost(e.cost_usd||0) + '</span></div>'
+    ).join('');
+  }
+}
+
+function updateClock() {
+  document.getElementById('clock').textContent = new Date().toLocaleTimeString();
+}
+
+// Fetch config for providers
+async function fetchConfig() {
+  try {
+    const r = await fetch('/api/config');
+    const c = await r.json();
+    const pl = document.getElementById('providers-list');
+    const provs = c.providers || {};
+    const keys = Object.keys(provs);
+    pl.innerHTML = keys.map(k =>
+      '<div class="flex justify-between"><span class="text-slate-400">' + k + '</span><span class="' + (provs[k] ? 'text-emerald-400' : 'text-red-400') + '">' + (provs[k] ? 'OK' : 'NO KEY') + '</span></div>'
+    ).join('');
+  } catch(e) {}
+}
+
+async function fetchRoutes() {
+  try {
+    const r = await fetch('/api/routes');
+    const data = await r.json();
+    const pm = data.persona_map || {};
+    const tb = document.getElementById('routes-table');
+    const personas = Object.keys(pm);
+    tb.innerHTML = personas.map(p => {
+      const tier = {architect:'reason',coder:'codegen',auditor:'reason',tester:'research'}[p] || '?';
+      const tt = {reason:'REASONING',codegen:'CODE_GEN',research:'FAST_DRAFT'}[tier] || '?';
+      return '<tr><td class="text-cyan-400">' + p + '</td><td>' + tier + '</td><td>' + tt + '</td><td class="text-slate-500">auto</td></tr>';
+    }).join('');
+  } catch(e) {}
+}
+
+connect();
+updateClock();
+setInterval(updateClock, 1000);
+fetchConfig();
+fetchRoutes();
+setInterval(fetchConfig, 30000);
+setInterval(fetchRoutes, 30000);
+
+// --- Question Modal ---
+let currentQuestion = null;
+let questionTimer = null;
+let questionCountdown = null;
+let selectedOption = null;
+
+const qOverlay = document.getElementById('q-overlay');
+const qText = document.getElementById('q-text');
+const qOptions = document.getElementById('q-options');
+const qCustomWrap = document.getElementById('q-custom-wrap');
+const qCustom = document.getElementById('q-custom');
+const qSubmit = document.getElementById('q-submit');
+const qTimer = document.getElementById('q-timer');
+const qSource = document.getElementById('q-source');
+
+function showQuestion(q) {
+  currentQuestion = q;
+  selectedOption = null;
+  qText.textContent = q.question || '';
+  qSource.textContent = q.source_worker ? 'from: ' + q.source_worker : '';
+  qOptions.innerHTML = '';
+  if (q.options && q.options.length > 0) {
+    qOptions.style.display = 'block';
+    q.options.forEach(function(opt, i) {
+      const btn = document.createElement('button');
+      btn.className = 'q-option';
+      btn.textContent = (i + 1) + '. ' + opt;
+      btn.onclick = function() {
+        document.querySelectorAll('.q-option').forEach(function(b) { b.classList.remove('selected'); });
+        btn.classList.add('selected');
+        selectedOption = opt;
+        qSubmit.disabled = false;
+      };
+      qOptions.appendChild(btn);
+    });
+  } else {
+    qOptions.style.display = 'none';
+  }
+  if (q.allow_custom !== false) {
+    qCustomWrap.style.display = 'block';
+    qCustom.value = '';
+    qCustom.oninput = function() {
+      if (qCustom.value.trim()) {
+        selectedOption = null;
+        document.querySelectorAll('.q-option').forEach(function(b) { b.classList.remove('selected'); });
+        qSubmit.disabled = false;
+      } else if (!selectedOption) {
+        qSubmit.disabled = true;
+      }
+    };
+  } else {
+    qCustomWrap.style.display = 'none';
+  }
+  qSubmit.disabled = true;
+  qOverlay.classList.add('active');
+  qCustom.focus();
+
+  var remaining = Math.min(q.timeout || 120, 600);
+  qTimer.textContent = remaining + 's';
+  if (questionCountdown) clearInterval(questionCountdown);
+  questionCountdown = setInterval(function() {
+    remaining--;
+    if (remaining <= 0) { clearInterval(questionCountdown); hideQuestion(); }
+    qTimer.textContent = remaining + 's';
+  }, 1000);
+}
+
+function hideQuestion() {
+  qOverlay.classList.remove('active');
+  if (questionCountdown) { clearInterval(questionCountdown); questionCountdown = null; }
+  currentQuestion = null;
+  selectedOption = null;
+}
+
+function sendAnswer(answer) {
+  if (!currentQuestion) return;
+  var payload = JSON.stringify({type: 'answer', question_id: currentQuestion.id, answer: answer});
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(payload);
+  }
+  hideQuestion();
+}
+
+qSubmit.onclick = function() {
+  var answer = selectedOption || (qCustom.value || '').trim();
+  if (answer) sendAnswer(answer);
+};
+qCustom.onkeydown = function(e) {
+  if (e.key === 'Enter' && qCustom.value.trim()) {
+    sendAnswer(qCustom.value.trim());
+  }
+};
+
+// Intercept dashboard messages for question events
+var _origOnMessage = null;
+function patchWsForQuestions() {
+  if (!ws) return;
+  ws.addEventListener('message', function(e) {
+    try {
+      var d = JSON.parse(e.data);
+      if (d.type === 'question' && d.id) {
+        showQuestion(d);
+      } else if (d.type === 'question_answer' && currentQuestion && d.question_id === currentQuestion.id) {
+        hideQuestion();
+      }
+    } catch(err) {}
+  });
+}
+// Re-patch after reconnect
+var _origConnect = connect;
+connect = function() {
+  _origConnect();
+  if (ws) {
+    ws.addEventListener('open', function() { patchWsForQuestions(); });
+  }
+};
+patchWsForQuestions();
+</script>
+</body>
+</html>

@@ -6,6 +6,7 @@ import {
 	slashMenuOpen,
 	type SlashCommandInfo,
 } from '../lib/slashCommands';
+import {TextEntranceField} from './TextEntranceField';
 
 export interface CommandAutocompleteProps {
 	value: string;
@@ -92,6 +93,7 @@ export interface SlashFieldProps {
 	placeholder?: string;
 	className?: string;
 	ariaLabel?: string;
+	disabled?: boolean;
 }
 
 export function SlashField({
@@ -101,6 +103,7 @@ export function SlashField({
 	placeholder,
 	className,
 	ariaLabel,
+	disabled,
 }: SlashFieldProps) {
 	const [selected, setSelected] = useState(0);
 	const [dismissed, setDismissed] = useState(false);
@@ -114,17 +117,17 @@ export function SlashField({
 		setSelected(0);
 	}, [value]);
 
-	function handleKeyDown(event: KeyboardEvent<HTMLInputElement>): void {
+	function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>): boolean {
 		if (open && matches.length > 0) {
 			if (event.key === 'ArrowUp') {
 				event.preventDefault();
 				setSelected(current => (current - 1 + matches.length) % matches.length);
-				return;
+				return true;
 			}
 			if (event.key === 'ArrowDown') {
 				event.preventDefault();
 				setSelected(current => (current + 1) % matches.length);
-				return;
+				return true;
 			}
 			if (event.key === 'Tab') {
 				event.preventDefault();
@@ -132,27 +135,28 @@ export function SlashField({
 				if (item) {
 					onChange(`${completeSlashLine(value, item.name)} `);
 				}
-				return;
+				return true;
 			}
 			if (event.key === 'Escape') {
 				event.preventDefault();
 				setDismissed(true);
-				return;
+				return true;
+			}
+			if (event.key === 'Enter' && !event.shiftKey) {
+				event.preventDefault();
+				const item = matches[selected];
+				const line = (item ? completeSlashLine(value, item.name) : value).trim();
+				if (line) {
+					onSubmit(line);
+				}
+				return true;
 			}
 		}
-
-		if (event.key === 'Enter') {
-			event.preventDefault();
-			const item = open ? matches[selected] : undefined;
-			const line = (item ? completeSlashLine(value, item.name) : value).trim();
-			if (line) {
-				onSubmit(line);
-			}
-		}
+		return false;
 	}
 
 	return (
-		<>
+		<div className="slash-field">
 			<CommandAutocomplete
 				value={value}
 				visible={open}
@@ -162,22 +166,21 @@ export function SlashField({
 					onSubmit(completeSlashLine(value, item.name));
 				}}
 			/>
-			<input
+			<TextEntranceField
 				className={className}
 				value={value}
 				placeholder={placeholder}
-				aria-label={ariaLabel}
-				aria-autocomplete="list"
-				aria-expanded={open}
-				onChange={event => {
-					const next = event.target.value;
+				ariaLabel={ariaLabel}
+				disabled={disabled}
+				onChange={next => {
 					onChange(next);
 					if (!next.startsWith('/')) {
 						setDismissed(false);
 					}
 				}}
+				onSubmit={onSubmit}
 				onKeyDown={handleKeyDown}
 			/>
-		</>
+		</div>
 	);
 }

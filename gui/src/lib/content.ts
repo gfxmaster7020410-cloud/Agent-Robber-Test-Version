@@ -1,10 +1,13 @@
+import {parseFenceHeader} from './miniDiff';
+
 export interface ContentSegment {
 	type: 'text' | 'code';
 	language?: string;
+	path?: string;
 	value: string;
 }
 
-const FENCE_PATTERN = /```([a-zA-Z0-9_-]*)\r?\n?([\s\S]*?)```/g;
+const FENCE_PATTERN = /```([^\n`]*)\r?\n?([\s\S]*?)```/g;
 
 function pushText(segments: ContentSegment[], value: string): void {
 	const trimmed = value.replace(/^\n+|\s+$/g, '');
@@ -22,9 +25,11 @@ export function parseContentSegments(content: string): ContentSegment[] {
 			pushText(segments, content.slice(cursor, index));
 		}
 
+		const header = parseFenceHeader(match[1] || '');
 		segments.push({
 			type: 'code',
-			language: match[1] || undefined,
+			language: header.language,
+			path: header.path,
 			value: match[2].replace(/\n$/, ''),
 		});
 		cursor = index + match[0].length;

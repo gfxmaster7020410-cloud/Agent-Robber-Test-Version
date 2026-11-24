@@ -6,13 +6,40 @@ export type MessageRole =
 	| 'success'
 	| 'system'
 	| 'error'
-	| 'reasoning';
+	| 'reasoning'
+	| 'file';
 
 export type BusyKind = 'thinking' | 'memory' | 'tool';
 
 export type ConnectionStatus = 'connecting' | 'online' | 'offline';
 
-export type DashboardView = 'overview' | 'config' | 'mem0' | 'memo-store' | 'fb-shark' | 'console' | 'logs' | 'mcp';
+export type DashboardView =
+	| 'workbench'
+	| 'overview'
+	| 'config'
+	| 'mem0'
+	| 'memo-store'
+	| 'fb-shark'
+	| 'console'
+	| 'logs'
+	| 'mcp';
+
+export interface FileCardPayload {
+	action: 'create' | 'edit' | 'delete' | string;
+	path: string;
+	language?: string;
+	before?: string;
+	after?: string;
+}
+
+export interface FileMutation {
+	path: string;
+	marker: '+' | '~' | '-';
+	detail: string;
+	action?: string;
+	status?: string;
+	line?: string;
+}
 
 export type BatchClass = 'eco' | 'normal' | 'heavy';
 
@@ -114,11 +141,20 @@ export interface OllamaScan {
 	error: string;
 }
 
+export interface AnsiSpan {
+	text: string;
+	color?: string | null;
+}
+
 export interface ChatMessage {
 	id: number;
 	role: MessageRole;
 	content: string;
 	timestamp: number;
+	frameId?: string;
+	ansi?: AnsiSpan[];
+	ansi_raw?: string;
+	streamKind?: 'initiating' | 'terminal' | 'error' | 'writing';
 }
 
 export interface MemoryHit {
@@ -260,8 +296,12 @@ export function nextMessageId(): number {
 	return messageId;
 }
 
-export function createMessage(role: MessageRole, content: string): ChatMessage {
-	return {id: nextMessageId(), role, content, timestamp: Date.now()};
+export function createMessage(
+	role: MessageRole,
+	content: string,
+	extra?: Partial<Pick<ChatMessage, 'frameId' | 'ansi' | 'streamKind'>>,
+): ChatMessage {
+	return {id: nextMessageId(), role, content, timestamp: Date.now(), ...extra};
 }
 
 export function formatClock(timestamp: number): string {

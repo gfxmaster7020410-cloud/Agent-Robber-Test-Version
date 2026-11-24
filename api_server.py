@@ -116,6 +116,26 @@ def _init_db() -> None:
                 error_message TEXT NOT NULL DEFAULT '',
                 endpoint    TEXT NOT NULL DEFAULT ''
             );
+
+            CREATE TABLE IF NOT EXISTS conversation_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT NOT NULL DEFAULT '',
+                tokens INTEGER NOT NULL DEFAULT 0,
+                timestamp TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_conversation_history_session
+                ON conversation_history (session_id, timestamp, id);
+
+            CREATE TABLE IF NOT EXISTS ssot_context (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                window_tokens BIGINT NOT NULL,
+                packed_tokens BIGINT NOT NULL DEFAULT 0,
+                hit_count INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            );
         """)
         log.info("Database ready at %s", DB_PATH)
 
@@ -140,9 +160,31 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 app = FastAPI(title="Agent Robber API", version="2.0.0")
 
+
+def _cors_origins() -> list[str]:
+    extra = os.environ.get("ROBBER_CORS_ORIGINS", "")
+    origins = [
+        "http://127.0.0.1:5173",
+        "http://localhost:5173",
+        "http://127.0.0.1:4173",
+        "http://localhost:4173",
+        "http://127.0.0.1:1420",
+        "http://localhost:1420",
+        "http://127.0.0.1:8787",
+        "http://localhost:8787",
+        "https://tauri.localhost",
+        "http://tauri.localhost",
+    ]
+    for item in extra.split(","):
+        host = item.strip()
+        if host and host != "*" and host not in origins:
+            origins.append(host)
+    return origins
+
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://127.0.0.1:5173", "http://localhost:5173", "*"],
+    allow_origins=_cors_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -194,31 +236,50 @@ def _write_log(
 # Pydantic schemas
 # ---------------------------------------------------------------------------
 
+class SsotWindowBody(BaseModel):
+    window: str | int | float | None = None
+    limit: str | int | float | None = None
+
+
 class ModelIn(BaseModel):
     alias: str = ""
-    provider: str
+    name: str = ""
+    provider: str = "CUSTOM"
+    provider_preset: str = ""
     base_url: str = ""
     api_key: str = ""
-    model_id: str
+    model_id: str = ""
+    model_string: str = ""
     protocol: str = "openai"
+    protocol_type: str = ""
     context_length: int = 128000
+    fallback_model_id: str | None = None
     priority: int = 1
     weight: int = 50
     is_active: bool = True
+    temperature: float = 0.2
+    cost_per_1m: float = 0.0
 
 
 class ModelPatch(BaseModel):
     alias: str | None = None
+    name: str | None = None
     provider: str | None = None
+    provider_preset: str | None = None
     base_url: str | None = None
     api_key: str | None = None
     model_id: str | None = None
+    model_string: str | None = None
     protocol: str | None = None
+    protocol_type: str | None = None
     context_length: int | None = None
+    fallback_model_id: str | None = None
     priority: int | None = None
     weight: int | None = None
     is_active: bool | None = None
     health_status: str | None = None
+    temperature: float | None = None
+    cost_per_1m: float | None = None
 
 
 class ChatMessage(BaseModel):
@@ -239,18 +300,44 @@ class ChatCompletionRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 def _model_row_to_safe(row: sqlite3.Row) -> dict[str, Any]:
-    """Convert a DB row to a safe dict for GET responses (masked key, no encryption leaking)."""
+    """Convert a DB row to a safe dict matching core server.py model keys."""
     d = _row_to_dict(row)
-    # Decrypt key in memory for internal use but mask for the response
     raw_key = decrypt_key(d.pop("encrypted_api_key", ""))
-    d["api_key"] = mask_key(raw_key)
-    d["api_key_ready"] = bool(raw_key)
-    d["is_active"] = bool(d.get("is_active", 1))
-    d["priority"] = d.get("priority", 1)
-    d["weight"] = d.get("weight", 50)
-    d["health_status"] = d.get("health_status", "UNKNOWN")
-    d["last_tested_at"] = d.get("last_tested_at")
-    return d
+    alias = str(d.get("alias") or d.get("name") or d.get("model_id") or "")
+    model_string = str(d.get("model_id") or "")
+    protocol = str(d.get("protocol") or "openai")
+    protocol_type = (
+        "OPENAI_COMPATIBLE"
+        if protocol.lower() in {"openai", "openai_compatible", "openai-compatible"}
+        else "ANTHROPIC_COMPATIBLE"
+        if "anthropic" in protocol.lower()
+        else "NATIVE"
+    )
+    return {
+        "id": d.get("id"),
+        "name": alias,
+        "alias": alias,
+        "provider": d.get("provider") or "CUSTOM",
+        "provider_preset": d.get("provider") or "CUSTOM",
+        "protocol": protocol,
+        "protocol_type": protocol_type,
+        "base_url": d.get("base_url") or "",
+        "model_id": model_string,
+        "model_string": model_string,
+        "api_key": mask_key(raw_key),
+        "api_key_ready": bool(raw_key),
+        "context_length": int(d.get("context_length") or 128000),
+        "fallback_model_id": d.get("fallback_model_id") or None,
+        "is_active": bool(d.get("is_active", 1)),
+        "priority": d.get("priority", 1),
+        "weight": d.get("weight", 50),
+        "health_status": d.get("health_status", "UNKNOWN"),
+        "last_tested_at": d.get("last_tested_at"),
+        "latency_ms": int(d.get("latency_ms") or 0),
+        "cost_per_1m": float(d.get("cost_per_1m") or 0.0),
+        "temperature": float(d.get("temperature") or 0.2),
+        "created_at": d.get("created_at"),
+    }
 
 
 def _model_row_for_proxy(row: sqlite3.Row) -> dict[str, Any]:
@@ -277,6 +364,18 @@ async def create_model(body: ModelIn) -> dict[str, Any]:
     model_id = str(uuid.uuid4())
     now = datetime.now(timezone.utc).isoformat()
     enc_key = encrypt_key(body.api_key)
+    model_string = body.model_string or body.model_id
+    alias = body.name or body.alias or model_string
+    provider = body.provider_preset or body.provider
+    protocol = (body.protocol_type or body.protocol or "openai").split("_")[0].lower()
+    if "anthropic" in protocol:
+        protocol = "anthropic"
+    elif protocol not in {"openai", "anthropic"}:
+        protocol = "openai"
+    if not model_string:
+        raise HTTPException(status_code=400, detail="model_id / model_string is required")
+    if not provider:
+        raise HTTPException(status_code=400, detail="provider is required")
 
     with _db() as conn:
         conn.execute(
@@ -285,12 +384,12 @@ async def create_model(body: ModelIn) -> dict[str, Any]:
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'UNKNOWN', ?)""",
             (
                 model_id,
-                body.alias or body.model_id,
-                body.provider,
-                body.model_id,
+                alias,
+                provider,
+                model_string,
                 body.base_url,
                 enc_key,
-                body.protocol,
+                protocol,
                 body.context_length,
                 body.priority,
                 body.weight,
@@ -302,7 +401,7 @@ async def create_model(body: ModelIn) -> dict[str, Any]:
     with _db() as conn:
         row = conn.execute("SELECT * FROM models WHERE id = ?", (model_id,)).fetchone()
 
-    log.info("Created model %s (%s)", body.alias or body.model_id, body.provider)
+    log.info("Created model %s (%s)", alias, provider)
     return _model_row_to_safe(row)
 
 
@@ -476,12 +575,17 @@ async def chat_completions(
                 temperature=body.temperature,
             )
             elapsed_ms = int((time.monotonic() - t0) * 1000)
+            usage = result.get("usage") if isinstance(result, dict) else {}
+            tokens_used = 0
+            if isinstance(usage, dict):
+                tokens_used = int(usage.get("total_tokens") or usage.get("output_tokens") or 0)
 
             _write_log(
                 model_id=row["id"],
                 model_alias=alias,
                 status_code=200,
                 latency_ms=elapsed_ms,
+                tokens_used=tokens_used,
                 endpoint="/api/v1/chat/completions",
             )
 
@@ -572,7 +676,182 @@ async def list_logs(limit: int = 50, model_id: str | None = None) -> list[dict[s
                 "SELECT * FROM logs ORDER BY timestamp DESC LIMIT ?",
                 (limit,),
             ).fetchall()
-    return [_row_to_dict(r) for r in rows]
+    return [_log_row(r) for r in rows]
+
+
+def _log_row(row: sqlite3.Row) -> dict[str, Any]:
+    d = _row_to_dict(row)
+    return {
+        "id": d.get("id"),
+        "timestamp": d.get("timestamp"),
+        "model_id": d.get("model_id") or "",
+        "model_alias": d.get("model_alias") or "",
+        "status_code": int(d.get("status_code") or 0),
+        "latency_ms": int(d.get("latency_ms") or 0),
+        "tokens": int(d.get("tokens_used") or d.get("tokens") or 0),
+        "tokens_used": int(d.get("tokens_used") or d.get("tokens") or 0),
+        "error_message": d.get("error_message") or "",
+        "endpoint": d.get("endpoint") or "",
+    }
+
+
+def _ssot_payload() -> dict[str, Any]:
+    from robber.config import DEFAULT_CONTEXT_WINDOW
+    from robber.ssot_context import window_public
+
+    payload: dict[str, Any] = {
+        "files": 0,
+        "chunks": 0,
+        "backend": "hash-json",
+        "watching": False,
+        "watch_events": 0,
+        "last_watch": 0.0,
+    }
+    try:
+        from robber.ssot import get_index
+
+        stats = getattr(get_index(), "stats", None)
+        if isinstance(stats, dict):
+            payload.update(stats)
+    except Exception:
+        pass
+    try:
+        from robber.ssot_watch import get_ssot_watcher
+
+        watcher = get_ssot_watcher()
+        public = watcher.public_stats() if watcher is not None else None
+        if isinstance(public, dict):
+            payload.update(public)
+    except Exception:
+        pass
+    window = DEFAULT_CONTEXT_WINDOW
+    packed = 0
+    hits = 0
+    try:
+        with _db() as conn:
+            row = conn.execute("SELECT * FROM ssot_context WHERE id = 1").fetchone()
+        if row is not None:
+            window = int(row["window_tokens"] or window)
+            packed = int(row["packed_tokens"] or 0)
+            hits = int(row["hit_count"] or 0)
+    except Exception:
+        pass
+    payload.update(window_public(window, packed=packed, hit_count=hits))
+    return payload
+
+
+def _local_history(session_id: str, limit: int) -> list[dict[str, Any]]:
+    cap = max(1, min(int(limit or 200), 1000))
+    sid = (session_id or "current_session").strip() or "current_session"
+    with _db() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, session_id, role, content, tokens, timestamp
+            FROM conversation_history
+            WHERE session_id = ?
+            ORDER BY timestamp ASC, id ASC
+            LIMIT ?
+            """,
+            (sid, cap),
+        ).fetchall()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        d = _row_to_dict(row)
+        out.append(
+            {
+                "id": int(d.get("id") or 0),
+                "session_id": str(d.get("session_id") or sid),
+                "role": str(d.get("role") or "system"),
+                "content": str(d.get("content") or ""),
+                "tokens": int(d.get("tokens") or 0),
+                "timestamp": str(d.get("timestamp") or ""),
+            }
+        )
+    return out
+
+
+@app.get("/api/history")
+@app.get("/api/v1/history")
+async def get_history(session_id: str = "current_session", limit: int = 200) -> dict[str, Any]:
+    sid = (session_id or "current_session").strip() or "current_session"
+    turns: list[dict[str, Any]] = []
+    try:
+        from robber.db.database import Database
+        from robber.jail import workspace_root
+
+        db = Database(workspace_root() / ".robber" / "accounts.db")
+        await db.connect()
+        try:
+            turns = await db.get_conversation_history(sid, limit=limit)
+        finally:
+            await db.close()
+    except Exception:
+        turns = []
+    if not turns:
+        turns = _local_history(sid, limit)
+    return {"session_id": sid, "turns": turns}
+
+
+@app.delete("/api/history")
+@app.delete("/api/v1/history")
+async def clear_history(session_id: str = "current_session") -> dict[str, Any]:
+    sid = (session_id or "current_session").strip() or "current_session"
+    try:
+        from robber.db.database import Database
+        from robber.jail import workspace_root
+
+        db = Database(workspace_root() / ".robber" / "accounts.db")
+        await db.connect()
+        try:
+            await db.clear_conversation_history(sid)
+        finally:
+            await db.close()
+    except Exception:
+        pass
+    with _db() as conn:
+        conn.execute("DELETE FROM conversation_history WHERE session_id = ?", (sid,))
+    return {"status": "ok", "session_id": sid, "turns": []}
+
+
+@app.get("/api/ssot/window")
+@app.get("/api/v1/ssot")
+async def get_ssot_window() -> dict[str, Any]:
+    return _ssot_payload()
+
+
+@app.post("/api/ssot/window")
+async def set_ssot_window(payload: SsotWindowBody) -> dict[str, Any]:
+    from robber.ssot_context import parse_window
+
+    raw = payload.window if payload.window is not None else payload.limit
+    if raw is None:
+        raise HTTPException(status_code=400, detail="context window is empty")
+    try:
+        value = parse_window(raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    stamp = datetime.now(timezone.utc).isoformat()
+    with _db() as conn:
+        conn.execute(
+            """
+            INSERT INTO ssot_context (id, window_tokens, packed_tokens, hit_count, updated_at)
+            VALUES (1, ?, 0, 0, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                window_tokens = excluded.window_tokens,
+                updated_at = excluded.updated_at
+            """,
+            (value, stamp),
+        )
+    return _ssot_payload()
+
+
+@app.get("/")
+async def root() -> dict[str, Any]:
+    return {
+        "name": "agent-robber-legacy-api",
+        "version": "2.0.0",
+        "ssot": _ssot_payload(),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -589,6 +868,7 @@ async def health() -> dict[str, Any]:
         "version": "2.0.0",
         "models_total": model_count,
         "models_active": active_count,
+        "ssot": _ssot_payload(),
     }
 
 
@@ -709,4 +989,8 @@ async def _proxy_anthropic(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=8787)
+    uvicorn.run(
+        app,
+        host="127.0.0.1",
+        port=int(os.environ.get("ROBBER_LEGACY_PORT", "8766")),
+    )

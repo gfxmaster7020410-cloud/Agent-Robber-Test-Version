@@ -9,6 +9,7 @@ import {
 	type ConnectionStatus,
 	type ComboModel,
 	type ControlMode,
+	type FileMutation,
 	type LoopTree,
 	type MemoryHit,
 	type MemoryNote,
@@ -43,6 +44,7 @@ const MESSAGE_ROLES: readonly MessageRole[] = [
 	'system',
 	'error',
 	'reasoning',
+	'file',
 ];
 
 const BUSY_KINDS: readonly BusyKind[] = ['thinking', 'memory', 'tool'];
@@ -81,11 +83,17 @@ export interface DaemonState {
 	controlMode: ControlMode;
 	loop: LoopTree | null;
 	mcp: McpSnapshot | null;
+	mutations: FileMutation[];
+	canUndo: boolean;
+	canRedo: boolean;
+	hybrid: boolean;
+	elapsedMs: number;
 }
 
 export interface BusyPhase {
 	kind: BusyKind;
 	label: string;
+	detail?: string;
 }
 
 export interface UseDaemonResult {
@@ -97,6 +105,9 @@ export interface UseDaemonResult {
 	tpsHistory: number[];
 	suiteEvents: SuiteEvent[];
 	sendPrompt: (text: string) => boolean;
+	setDashboardMode: (mode: string) => boolean;
+	triggerStepAction: (action: string) => boolean;
+	killTask: () => boolean;
 	sendSlash: (command: string, args: string[], text?: string) => boolean;
 	setMode: (mode: string) => boolean;
 	setControlMode: (mode: ControlMode) => boolean;
@@ -181,6 +192,42 @@ function asStringArray(value: unknown): string[] | null {
 		: null;
 }
 
+function asStreamKind(value: unknown): ChatMessage['streamKind'] | undefined {
+	return value === 'initiating' || value === 'terminal' || value === 'error' || value === 'writing'
+		? value
+		: undefined;
+}
+
+function ansiFromValue(value: unknown): NonNullable<ChatMessage['ansi']> | undefined {
+	if (!Array.isArray(value)) {
+		return undefined;
+	}
+
+	const out: NonNullable<ChatMessage['ansi']> = [];
+	for (const item of value) {
+		const row = asRecord(item);
+		const text = asString(row?.['text']);
+		if (!text) {
+			continue;
+		}
+
+		out.push({text, color: asString(row?.['color'])});
+	}
+
+	return out.length > 0 ? out : undefined;
+}
+
+function extrasFromFrame(
+	frame: Record<string, unknown>,
+): Partial<Pick<ChatMessage, 'frameId' | 'ansi' | 'streamKind'>> {
+	const payload = asRecord(frame['payload']);
+	return {
+		frameId: asString(frame['id']) ?? undefined,
+		ansi: ansiFromValue(frame['ansi']) ?? ansiFromValue(payload?.['ansi']),
+		streamKind: asStreamKind(frame['stream_kind']) ?? asStreamKind(payload?.['type']),
+	};
+}
+
 function keysFromFrame(frame: Record<string, unknown>): Record<string, boolean> {
 	const raw = asRecord(frame['keys']);
 	if (!raw) {
@@ -206,6 +253,39 @@ function ssotFromFrame(frame: Record<string, unknown>) {
 		contextWindow: asContextWindow(frame['context_window'] ?? ssot?.['window'] ?? DEFAULT_CONTEXT_WINDOW),
 		contextPacked: asNumber(frame['context_packed'] ?? ssot?.['packed']) ?? 0,
 		contextHits: asNumber(frame['context_hits'] ?? ssot?.['hits']) ?? 0,
+	};
+}
+
+function mutationsFromValue(value: unknown): {files: FileMutation[]; canUndo: boolean; canRedo: boolean} {
+	const row = asRecord(value);
+	const rawList = Array.isArray(value) ? value : row?.['files'];
+	const files: FileMutation[] = [];
+	if (Array.isArray(rawList)) {
+		for (const item of rawList) {
+			const entry = asRecord(item);
+			const path = asString(entry?.['path']);
+			if (!entry || !path) {
+				continue;
+			}
+
+			const markerRaw = asString(entry['marker']);
+			const marker: FileMutation['marker'] =
+				markerRaw === '+' || markerRaw === '-' || markerRaw === '~' ? markerRaw : '~';
+			files.push({
+				path,
+				marker,
+				detail: asString(entry['detail']) ?? '(Modified)',
+				action: asString(entry['action']) ?? undefined,
+				status: asString(entry['status']) ?? undefined,
+				line: asString(entry['line']) ?? undefined,
+			});
+		}
+	}
+
+	return {
+		files,
+		canUndo: row?.['can_undo'] === true,
+		canRedo: row?.['can_redo'] === true,
 	};
 }
 
@@ -507,6 +587,7 @@ export function useDaemon(url: string = DEFAULT_DAEMON_URL): UseDaemonResult {
 	const timerRef = useRef<number | null>(null);
 	const attemptRef = useRef(0);
 	const disposedRef = useRef(false);
+	const seenIdsRef = useRef(new Set<string>());
 
 	const append = useCallback((message: ChatMessage) => {
 		setMessages(previous => [...previous, message]);
@@ -530,11 +611,47 @@ export function useDaemon(url: string = DEFAULT_DAEMON_URL): UseDaemonResult {
 				return;
 			}
 
-			switch (frame['type']) {
+			if (asString(frame['type']) === 'ping') {
+				return;
+			}
+
+			const frameId = asString(frame['id']);
+			if (frameId) {
+				if (seenIdsRef.current.has(frameId)) {
+					return;
+				}
+
+				seenIdsRef.current.add(frameId);
+				if (seenIdsRef.current.size > 4000) {
+					seenIdsRef.current = new Set([...seenIdsRef.current].slice(-2000));
+				}
+			}
+
+			const eventName = asString(frame['event']);
+			if (eventName === 'LOG_STREAM' && frame['type'] !== 'message' && frame['type'] !== 'error') {
+				const payload = asRecord(frame['payload']) ?? frame;
+				const content = asString(payload['content']) ?? asString(frame['content']);
+				const streamType = asString(payload['type']);
+				if (content) {
+					const role: MessageRole =
+						streamType === 'error' ? 'error' : streamType === 'initiating' ? 'user' : streamType === 'writing' ? 'file' : 'tool';
+					append(createMessage(role, content, extrasFromFrame(frame)));
+				}
+				return;
+			}
+
+			const kind =
+				frame['type'] === 'state' || eventName === 'STATE_SYNC'
+					? 'state'
+					: frame['type'] === 'mutations' || eventName === 'FILE_MUTATION_UPDATE' || eventName === 'MUTATION_SYNC'
+						? 'mutations'
+						: frame['type'];
+			switch (kind) {
 				case 'state': {
 					const busy = frame['busy'] === true;
 					const tps = asNumber(frame['tps']) ?? 0;
 					const batch = asBatch(frame['batch']);
+					const mut = mutationsFromValue(frame['mutations']);
 					setDaemon({
 						mode: asString(frame['mode']) ?? 'act',
 						model: asString(frame['model']) ?? 'unknown',
@@ -562,6 +679,11 @@ export function useDaemon(url: string = DEFAULT_DAEMON_URL): UseDaemonResult {
 						controlMode: asControlMode(frame['control_mode']),
 						loop: loopFromValue(frame['loop']),
 						mcp: mcpFromFrame(frame),
+						mutations: mut.files,
+						canUndo: mut.canUndo,
+						canRedo: mut.canRedo,
+						hybrid: frame['hybrid'] === true,
+						elapsedMs: asNumber(frame['elapsed_ms']) ?? 0,
 					});
 					if (tps > 0) {
 						setTpsHistory(previous => [...previous.slice(1), Math.min(100, tps)]);
@@ -574,8 +696,51 @@ export function useDaemon(url: string = DEFAULT_DAEMON_URL): UseDaemonResult {
 					break;
 				}
 
+				case 'mutations': {
+					const mut = mutationsFromValue(frame['payload'] ?? frame['mutations'] ?? frame);
+					setDaemon(previous =>
+						previous
+							? {
+									...previous,
+									mutations: mut.files,
+									canUndo: mut.canUndo,
+									canRedo: mut.canRedo,
+								}
+							: previous,
+					);
+					break;
+				}
+
 				case 'memory_hits': {
 					setHits(hitsFromValue(frame['hits']));
+					break;
+				}
+
+				case 'history': {
+					const turns = Array.isArray(frame['turns']) ? frame['turns'] : [];
+					setMessages(previous => {
+						if (previous.length > 0) {
+							return previous;
+						}
+						const seeded: ChatMessage[] = [];
+						for (const raw of turns) {
+							const row = asRecord(raw);
+							if (!row) {
+								continue;
+							}
+							const content = asString(row['content']) ?? '';
+							if (!content) {
+								continue;
+							}
+							const roleRaw = (asString(row['role']) ?? 'system').toLowerCase();
+							const role: MessageRole = MESSAGE_ROLES.includes(roleRaw as MessageRole)
+								? (roleRaw as MessageRole)
+								: 'system';
+							const hid = asNumber(row['id']) ?? seeded.length;
+							seeded.push(createMessage(role, content, {frameId: `hist-${hid}`}));
+						}
+						return seeded;
+					});
 					break;
 				}
 
@@ -589,6 +754,7 @@ export function useDaemon(url: string = DEFAULT_DAEMON_URL): UseDaemonResult {
 					const resolved: MessageRole = MESSAGE_ROLES.includes(role as MessageRole)
 						? (role as MessageRole)
 						: 'system';
+					const extras = extrasFromFrame(frame);
 					if (frame['append'] === true) {
 						setMessages(previous => {
 							for (let index = previous.length - 1; index >= 0; index -= 1) {
@@ -602,15 +768,20 @@ export function useDaemon(url: string = DEFAULT_DAEMON_URL): UseDaemonResult {
 									next[index] = {
 										...current,
 										content: current.content + content,
+										ansi: extras.ansi
+											? [...(current.ansi ?? []), ...extras.ansi]
+											: current.ansi,
+										streamKind: extras.streamKind ?? current.streamKind,
+										frameId: extras.frameId ?? current.frameId,
 									};
 									return next;
 								}
 							}
 
-							return [...previous, createMessage(resolved, content)];
+							return [...previous, createMessage(resolved, content, extras)];
 						});
 					} else {
-						append(createMessage(resolved, content));
+						append(createMessage(resolved, content, extras));
 					}
 
 					break;
@@ -620,7 +791,11 @@ export function useDaemon(url: string = DEFAULT_DAEMON_URL): UseDaemonResult {
 					const kind = asString(frame['kind']);
 					const label = asString(frame['label']);
 					if (kind !== null && BUSY_KINDS.includes(kind as BusyKind)) {
-						setBusyPhase({kind: kind as BusyKind, label: label ?? ''});
+						setBusyPhase({
+							kind: kind as BusyKind,
+							label: label ?? '',
+							detail: asString(frame['detail']) ?? undefined,
+						});
 					}
 
 					break;
@@ -805,7 +980,6 @@ export function useDaemon(url: string = DEFAULT_DAEMON_URL): UseDaemonResult {
 				openRef.current = false;
 				setStatus('offline');
 				setBusyPhase(null);
-				setDaemon(null);
 				scheduleReconnect();
 			});
 		};
@@ -863,7 +1037,19 @@ export function useDaemon(url: string = DEFAULT_DAEMON_URL): UseDaemonResult {
 		tpsHistory,
 		suiteEvents,
 		ollamaScan,
-		sendPrompt: useCallback((text: string) => send({type: 'prompt', text}), [send]),
+		sendPrompt: useCallback(
+			(text: string) => send({type: 'EXECUTE_PROMPT', text, prompt: text}),
+			[send],
+		),
+		setDashboardMode: useCallback(
+			(mode: string) => send({type: 'SET_MODE', mode}),
+			[send],
+		),
+		triggerStepAction: useCallback(
+			(action: string) => send({type: 'TRIGGER_STEP_ACTION', action}),
+			[send],
+		),
+		killTask: useCallback(() => send({type: 'KILL_TASK'}), [send]),
 		sendSlash: useCallback(
 			(command: string, args: string[], text?: string) =>
 				send({

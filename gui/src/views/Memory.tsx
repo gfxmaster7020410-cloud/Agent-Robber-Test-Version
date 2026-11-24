@@ -3,6 +3,7 @@ import type {DaemonState} from '../hooks/useDaemon';
 import type {MemoryHit, MemoryNote} from '../lib/types';
 import {IconSearch} from '../components/Icons';
 import {ContextWindowPanel} from '../components/ContextWindowPanel';
+import {formatWindow} from '../lib/contextWindow';
 
 const CATEGORIES = ['all', 'system', 'user', 'session', 'vector', 'tool'] as const;
 
@@ -196,7 +197,7 @@ export function MemoryView({
 					<div className="mem0-ribbon__item">
 						<span className="mem0-ribbon__lbl font-display">WINDOW</span>
 						<span className="mem0-ribbon__val font-mono font-bold accent-text">
-							{daemon ? daemon.contextWindow.toLocaleString() : '1T'}
+							{daemon ? formatWindow(daemon.contextWindow) : '1T'}
 						</span>
 					</div>
 					<div className="mem0-ribbon__item">

@@ -74,6 +74,18 @@ class FakeHost:
     async def persist_window(self, raw: object) -> int:
         return 2048
 
+    async def undo_step(self) -> str:
+        return "Nothing to undo"
+
+    async def redo_step(self) -> str:
+        return "Nothing to redo"
+
+    async def accept_all(self) -> str:
+        return "Nothing pending to accept"
+
+    async def revert_all(self) -> str:
+        return "Nothing to revert"
+
     async def run_argv(self, argv: list[str], timeout: float = 30.0) -> tuple[int, str]:
         return 0, "ok"
 
@@ -111,6 +123,24 @@ async def main() -> None:
         "ask-questions",
         "prepare-next-input",
         "test",
+        "undo",
+        "redo",
+        "accept",
+        "revert",
+        "discover",
+        "audit",
+        "heal",
+        "snapshots",
+        "restore",
+        "local",
+        "exit",
+        "sync",
+        "handoff",
+        "graph",
+        "loop",
+        "horizon",
+        "resolve",
+        "plugin",
     ):
         if required not in names:
             _fail(f"missing command /{required}")

@@ -8,10 +8,8 @@ class GeminiStreamEngine:
     """Async engine for streaming Gemini responses using google-genai SDK."""
 
     def __init__(self, api_key: Optional[str] = None):
-        key = api_key or os.getenv("GEMINI_API_KEY")
-        if not key:
-            raise ValueError("GEMINI_API_KEY not found in environment or parameters.")
-        self.client = genai.Client(api_key=key)
+        key = (api_key or os.getenv("GEMINI_API_KEY") or "").strip()
+        self.client = genai.Client(api_key=key) if key else None
 
     async def stream_completion(
         self,
@@ -21,6 +19,8 @@ class GeminiStreamEngine:
         model: str = "gemini-3.6-flash"
     ) -> AsyncGenerator[str, None]:
         """Streams completion from Gemini model."""
+        if self.client is None:
+            return
         config = types.GenerateContentConfig(
             system_instruction=system_instruction,
             temperature=temperature

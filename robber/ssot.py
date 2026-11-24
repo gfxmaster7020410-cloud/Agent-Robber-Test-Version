@@ -2,15 +2,31 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import mmap
 import os
 import threading
+import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from pathlib import Path
+from typing import Iterator
 
-from robber.chunker import chunk_file
+from robber.chunker import Chunk, chunk_file
+from robber.config import LOCK_STALE_SECONDS, MMAP_MAX_BYTES, MMAP_WINDOW_BYTES
 from robber.embed import cosine, embed
 from robber.jail import is_skipped_dir, workspace_root, dir_is_locked
+
+try:
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None  # type: ignore[assignment]
+
+try:
+    import msvcrt
+except ImportError:
+    msvcrt = None  # type: ignore[assignment]
 
 INDEX_EXTS = {
     ".py",
@@ -75,6 +91,266 @@ SKIP_SAMPLE_LIMIT = 8
 
 # Kept so older imports (`from robber.ssot import SKIP_FILE_NAMES`) still work.
 SKIP_FILE_NAMES = LOCK_NAMES | SECRET_NAMES
+
+
+class QuantumSafeChecksum:
+    """SHA-3 (sha3_256) integrity digest for ledger and index mutations."""
+
+    @staticmethod
+    def digest(data: bytes | str) -> str:
+        blob = data.encode("utf-8") if isinstance(data, str) else data
+        return hashlib.sha3_256(blob or b"").hexdigest()
+
+    @staticmethod
+    def verify(data: bytes | str, expected: str) -> bool:
+        got = QuantumSafeChecksum.digest(data)
+        want = (expected or "").strip().lower()
+        return bool(want) and got == want
+
+
+class FileMicroLock:
+    """Non-blocking exclusive lease. fcntl on POSIX, msvcrt on Windows."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = Path(path)
+        self._handle: object | None = None
+
+    def acquire(self, *, blocking: bool = False) -> bool:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        flags = os.O_RDWR | os.O_CREAT
+        handle = os.open(str(self.path), flags)
+        try:
+            os.lseek(handle, 0, os.SEEK_SET)
+            if os.fstat(handle).st_size <= 0:
+                os.write(handle, b"\0")
+                os.lseek(handle, 0, os.SEEK_SET)
+            if fcntl is not None:
+                op = fcntl.LOCK_EX
+                if not blocking:
+                    op |= fcntl.LOCK_NB
+                try:
+                    fcntl.flock(handle, op)
+                except OSError:
+                    os.close(handle)
+                    return False
+            elif msvcrt is not None:
+                mode = msvcrt.LK_LOCK if blocking else msvcrt.LK_NBLCK
+                try:
+                    msvcrt.locking(handle, mode, 1)
+                except OSError:
+                    os.close(handle)
+                    return False
+            else:
+                os.close(handle)
+                return False
+        except Exception:
+            try:
+                os.close(handle)
+            except OSError:
+                pass
+            return False
+        lease = json.dumps({"pid": os.getpid(), "ts": time.time()})
+        try:
+            os.lseek(handle, 0, os.SEEK_SET)
+            payload = lease.encode("utf-8")
+            os.write(handle, payload)
+        except OSError:
+            pass
+        self._handle = handle
+        return True
+
+    def release(self) -> None:
+        handle = self._handle
+        self._handle = None
+        if handle is None:
+            return
+        try:
+            if fcntl is not None:
+                fcntl.flock(handle, fcntl.LOCK_UN)
+            elif msvcrt is not None:
+                try:
+                    os.lseek(handle, 0, os.SEEK_SET)
+                    msvcrt.locking(handle, msvcrt.LK_UNLCK, 1)
+                except OSError:
+                    pass
+        finally:
+            try:
+                os.close(handle)
+            except OSError:
+                pass
+
+    def stale(self, *, now: float | None = None, timeout: float = LOCK_STALE_SECONDS) -> bool:
+        if not self.path.is_file():
+            return False
+        try:
+            raw = self.path.read_text(encoding="utf-8", errors="replace").strip()
+            stamp = float(json.loads(raw).get("ts") or 0.0) if raw.startswith("{") else self.path.stat().st_mtime
+        except (OSError, ValueError, json.JSONDecodeError, UnicodeDecodeError, UnicodeError):
+            try:
+                stamp = self.path.stat().st_mtime
+            except OSError:
+                return False
+        clock = time.time() if now is None else now
+        return (clock - stamp) >= timeout
+
+
+class DeadlockRecoveryWatchdog:
+    """Sweep abandoned micro-locks after a 30s timeout. Optional background loop."""
+
+    def __init__(self, lock_dir: Path, *, stale_after: float = LOCK_STALE_SECONDS) -> None:
+        self.lock_dir = Path(lock_dir)
+        self.stale_after = stale_after
+        self.sweeps = 0
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self, *, interval: float = 5.0) -> None:
+        self.stop()
+        self._stop = threading.Event()
+        wait = max(0.05, float(interval))
+
+        def loop() -> None:
+            while not self._stop.wait(wait):
+                self.sweep()
+
+        self._thread = threading.Thread(target=loop, name="ssot-lock-watchdog", daemon=True)
+        self._thread.start()
+
+    def stop(self, timeout: float = 2.0) -> None:
+        self._stop.set()
+        thread = self._thread
+        self._thread = None
+        if thread is not None and thread.is_alive():
+            thread.join(timeout=max(0.05, float(timeout)))
+
+    def sweep(self, *, now: float | None = None) -> int:
+        if not self.lock_dir.is_dir():
+            return 0
+        recovered = 0
+        clock = time.time() if now is None else now
+        for path in self.lock_dir.glob("*.lock"):
+            lock = FileMicroLock(path)
+            if not lock.stale(now=clock, timeout=self.stale_after):
+                continue
+            try:
+                path.unlink()
+                recovered += 1
+            except OSError:
+                continue
+        self.sweeps += 1
+        return recovered
+
+    def recover(self) -> int:
+        return self.sweep()
+
+    def count_stale(self, *, now: float | None = None) -> int:
+        if not self.lock_dir.is_dir():
+            return 0
+        clock = time.time() if now is None else now
+        total = 0
+        for path in self.lock_dir.glob("*.lock"):
+            if FileMicroLock(path).stale(now=clock, timeout=self.stale_after):
+                total += 1
+        return total
+
+
+@contextmanager
+def atomic_section_lock(name: str, root: Path | None = None, *, timeout: float = LOCK_STALE_SECONDS):
+    """Exclusive critical section for SSOT mutation (reindex/save)."""
+    base = (root or workspace_root()).resolve() / ".robber" / "locks"
+    watchdog = DeadlockRecoveryWatchdog(base, stale_after=LOCK_STALE_SECONDS)
+    watchdog.sweep()
+    lock = FileMicroLock(base / f"{name}.lock")
+    deadline = time.monotonic() + max(0.05, float(timeout))
+    held = False
+    while time.monotonic() <= deadline:
+        if lock.acquire(blocking=False):
+            held = True
+            break
+        watchdog.sweep()
+        time.sleep(0.02)
+    if not held:
+        raise TimeoutError(f"atomic lock '{name}' timed out")
+    try:
+        yield lock
+    finally:
+        lock.release()
+
+
+class MemoryMappedChunkStreamer:
+    """Zero-copy mmap windows over large documents (200+ page text)."""
+
+    def __init__(self, path: Path, *, window: int = MMAP_WINDOW_BYTES) -> None:
+        self.path = Path(path)
+        self.window = max(4096, int(window))
+
+    def iter_windows(self) -> Iterator[bytes]:
+        if not self.path.is_file():
+            return
+        size = self.path.stat().st_size
+        if size <= 0:
+            return
+        with self.path.open("rb") as handle:
+            with mmap.mmap(handle.fileno(), 0, access=mmap.ACCESS_READ) as mapped:
+                length = mapped.size()
+                for start in range(0, length, self.window):
+                    yield bytes(mapped[start : start + self.window])
+
+    def iter_lines(self) -> Iterator[tuple[int, str]]:
+        buf = ""
+        line_no = 0
+        overflow = max(self.window * 4, 256_000)
+        for window in self.iter_windows():
+            buf += window.decode("utf-8", errors="replace")
+            while True:
+                newline = buf.find("\n")
+                if newline < 0:
+                    if len(buf) > overflow:
+                        line_no += 1
+                        yield line_no, buf[:overflow]
+                        buf = buf[overflow:]
+                    break
+                line_no += 1
+                yield line_no, buf[:newline]
+                buf = buf[newline + 1 :]
+        if buf:
+            line_no += 1
+            yield line_no, buf.rstrip("\n")
+
+    def extract_lines(self, start: int, end: int) -> str:
+        lo = max(1, int(start))
+        hi = max(lo, int(end))
+        out: list[str] = []
+        for line_no, line in self.iter_lines():
+            if line_no < lo:
+                continue
+            if line_no > hi:
+                break
+            out.append(line)
+        return "\n".join(out)
+
+    def iter_line_chunks(self, rel: str, *, lines_per_chunk: int = 50, max_chunks: int = 400) -> Iterator[Chunk]:
+        batch: list[str] = []
+        start_line = 1
+        emitted = 0
+        last = 0
+        for line_no, line in self.iter_lines():
+            if not batch:
+                start_line = line_no
+            batch.append(line)
+            last = line_no
+            if len(batch) >= lines_per_chunk:
+                body = "\n".join(batch)
+                if body.strip():
+                    yield Chunk(rel, "mmap", start_line, last, body)
+                    emitted += 1
+                    if emitted >= max_chunks:
+                        return
+                batch = []
+        if batch and emitted < max_chunks:
+            body = "\n".join(batch)
+            if body.strip():
+                yield Chunk(rel, "mmap", start_line, last, body)
 
 
 def skip_reason(path: Path) -> str | None:
@@ -154,8 +430,8 @@ class SsotIndex:
         if not self.path.is_file():
             return
         try:
-            raw = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
+            raw = json.loads(self.path.read_text(encoding="utf-8", errors="replace"))
+        except (OSError, json.JSONDecodeError, UnicodeDecodeError, UnicodeError):
             return
         with self._lock:
             self.files = int(raw.get("files", 0))
@@ -172,10 +448,17 @@ class SsotIndex:
             "chunks": [asdict(chunk) for chunk in self.chunks],
             "skipped_by": self.skipped,
             "skipped_samples": self.skipped_samples,
+            "checksum": QuantumSafeChecksum.digest(
+                json.dumps({"files": self.files, "chunks": len(self.chunks)})
+            ),
         }
         self.path.write_text(json.dumps(payload), encoding="utf-8")
 
     def reindex(self) -> dict[str, object]:
+        with atomic_section_lock("ssot-reindex", self.root):
+            return self._reindex_unlocked()
+
+    def _reindex_unlocked(self) -> dict[str, object]:
         chunks: list[StoredChunk] = []
         files = 0
         skipped: dict[str, int] = {}
@@ -196,20 +479,24 @@ class SsotIndex:
             except OSError:
                 skipped["stat"] = skipped.get("stat", 0) + 1
                 continue
-            if size > MAX_BYTES:
+            if size > MMAP_MAX_BYTES:
                 skipped["size"] = skipped.get("size", 0) + 1
                 if len(samples) < SKIP_SAMPLE_LIMIT:
                     rel = str(path.relative_to(self.root)).replace("\\", "/")
                     samples.append(f"{rel} (size)")
                 continue
+            rel = str(path.relative_to(self.root)).replace("\\", "/")
             try:
-                source = path.read_text(encoding="utf-8", errors="replace")
+                if size > MAX_BYTES:
+                    pieces = list(MemoryMappedChunkStreamer(path).iter_line_chunks(rel))
+                else:
+                    source = path.read_text(encoding="utf-8", errors="replace")
+                    pieces = chunk_file(rel, source)
             except OSError:
                 skipped["stat"] = skipped.get("stat", 0) + 1
                 continue
-            rel = str(path.relative_to(self.root)).replace("\\", "/")
             files += 1
-            for piece in chunk_file(rel, source):
+            for piece in pieces:
                 chunks.append(
                     StoredChunk(
                         path=piece.path,

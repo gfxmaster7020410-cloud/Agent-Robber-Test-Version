@@ -24,9 +24,9 @@ ALLOWED_MODULES = {"robber.mcp.echo_server"}
 BUILTIN_SEED: list[dict[str, Any]] = [
     {
         "id": "jailed-fs",
-        "label": "Jailed filesystem",
+        "label": "Host filesystem",
         "kind": "builtin",
-        "description": "list_dir, read_file, and search_files inside ROBBER_WORKSPACE.",
+        "description": "list_dir, read_file, and search_files anywhere on the local machine.",
         "enabled": True,
         "builtin": True,
         "command": "",

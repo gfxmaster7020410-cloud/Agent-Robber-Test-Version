@@ -1,0 +1,34 @@
+{
+    "daily_limit_usd": 2.00,
+    "monthly_limit_usd": 30.00,
+    "warning_pct": 90,
+    "auto_fallback_local": true,
+    "tracked_providers": [
+        "anthropic",
+        "gemini",
+        "openai",
+        "groq",
+        "openrouter",
+        "omniroute",
+        "tokenrouter",
+        "deepseek",
+        "mistral",
+        "together"
+    ],
+    "pricing_per_million_tokens": {
+        "anthropic": {"input": 3.0, "output": 15.0},
+        "gemini": {"input": 0.35, "output": 1.05},
+        "openai": {"input": 2.5, "output": 10.0},
+        "groq": {"input": 0.05, "output": 0.10},
+        "openrouter": {"input": 0.4, "output": 0.4},
+        "omniroute": {"input": 0.4, "output": 0.4},
+        "tokenrouter": {"input": 0.4, "output": 0.4},
+        "deepseek": {"input": 0.14, "output": 0.28},
+        "mistral": {"input": 0.2, "output": 0.6},
+        "together": {"input": 0.1, "output": 0.1},
+        "ollama": {"input": 0.0, "output": 0.0},
+        "local": {"input": 0.0, "output": 0.0},
+        "vllm": {"input": 0.0, "output": 0.0},
+        "lmstudio": {"input": 0.0, "output": 0.0}
+    }
+}

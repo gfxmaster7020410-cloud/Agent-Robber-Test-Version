@@ -8,6 +8,10 @@ export default defineConfig({
 	clearScreen: false,
 	envPrefix: ['VITE_', 'TAURI_ENV_', 'TAURI_'],
 	base: tauri ? './' : '/',
+	worker: {format: 'es'},
+	optimizeDeps: {
+		include: ['monaco-editor', '@monaco-editor/react'],
+	},
 	server: {
 		host: '127.0.0.1',
 		port: 5173,

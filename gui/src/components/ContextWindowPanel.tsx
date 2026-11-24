@@ -26,16 +26,16 @@ export function ContextWindowPanel({
 	const [draft, setDraft] = useState(() => String(windowTokens));
 
 	useEffect(() => {
-		setDraft(String(windowTokens));
+		setDraft(formatWindow(windowTokens));
 	}, [windowTokens]);
 
 	function apply(raw: string | number) {
 		const parsed = typeof raw === 'number' ? raw : parseWindowInput(raw);
-		if (parsed === null) {
+		if (parsed === null || parsed <= 0) {
 			return;
 		}
 
-		setDraft(String(parsed));
+		setDraft(formatWindow(parsed));
 		onApply(typeof raw === 'string' ? raw.trim() : parsed);
 	}
 
@@ -47,12 +47,13 @@ export function ContextWindowPanel({
 					{formatWindow(windowTokens)}
 					<span className="ssot-window__sub">
 						{' '}
-						· packed {packedTokens.toLocaleString()} · {hitCount} hits
+						· packed {formatWindow(packedTokens)} · {hitCount} hits
 					</span>
 				</span>
 			</div>
 			<p className="ssot-window__hint">
-				Logical budget shared by every model. Default is 1T. Pin a section with{' '}
+				Logical budget shared by every model. Type <code>128K</code>, <code>1M</code>,{' '}
+				<code>1B</code>, or <code>1T</code> — no upper cap. Pin a section with{' '}
 				<code>@file#Lstart-Lend</code>. Live — works while the agent is running.
 			</p>
 			<div className="ssot-window__row">
@@ -69,7 +70,7 @@ export function ContextWindowPanel({
 				<input
 					className="glass-input ssot-window__input"
 					value={draft}
-					placeholder="1t"
+					placeholder="1M"
 					aria-label="SSOT context window"
 					onChange={event => setDraft(event.target.value)}
 					onKeyDown={event => {
